@@ -55,6 +55,11 @@ android {
     compose = true
     buildConfig = true
   }
+  packaging {
+    jniLibs {
+      useLegacyPackaging = true
+    }
+  }
   testOptions { unitTests { isIncludeAndroidResources = true } }
 }
 

@@ -35,36 +35,37 @@ class MediaEngine(private val context: Context) {
     fun executeFFmpegCommand(command: String): Flow<ExecutionState> = callbackFlow {
         trySend(ExecutionState.Connecting)
 
-        val session: FFmpegSession = FFmpegKit.executeAsync(
-            command,
-            { session ->
-                // onComplete Callback
-                val returnCode = session.returnCode
-                if (ReturnCode.isSuccess(returnCode)) {
-                    val logs = session.logsAsString
-                    trySend(ExecutionState.Success(logs))
-                } else if (ReturnCode.isCancel(returnCode)) {
-                    trySend(ExecutionState.Error(returnCode, "Canceled by user"))
-                } else {
-                    trySend(ExecutionState.Error(returnCode, session.failStackTrace ?: session.logsAsString))
+        try {
+            val session: FFmpegSession = FFmpegKit.executeAsync(
+                command,
+                { session ->
+                    val returnCode = session.returnCode
+                    if (ReturnCode.isSuccess(returnCode)) {
+                        trySend(ExecutionState.Success(session.logsAsString))
+                    } else if (ReturnCode.isCancel(returnCode)) {
+                        trySend(ExecutionState.Error(returnCode, "Canceled by user"))
+                    } else {
+                        trySend(ExecutionState.Error(returnCode, session.failStackTrace ?: session.logsAsString))
+                    }
+                    close()
+                },
+                { log -> 
+                },
+                { statistics -> 
+                    trySend(ExecutionState.Progress(
+                        timeInMilliseconds = statistics.time.toLong(),
+                        size = statistics.size,
+                        bitrate = statistics.bitrate
+                    ))
                 }
-                close()
-            },
-            { log -> 
-                // onLog Callback (nếu cần ghi log chi tiết)
-            },
-            { statistics -> 
-                // onStatistics Callback
-                trySend(ExecutionState.Progress(
-                    timeInMilliseconds = statistics.time.toLong(),
-                    size = statistics.size,
-                    bitrate = statistics.bitrate
-                ))
-            }
-        )
+            )
 
-        awaitClose {
-            FFmpegKit.cancel(session.sessionId)
+            awaitClose {
+                FFmpegKit.cancel(session.sessionId)
+            }
+        } catch (e: Throwable) {
+            trySend(ExecutionState.Error(null, "Native Error: ${e.message}"))
+            close(e)
         }
     }
 
@@ -73,6 +74,10 @@ class MediaEngine(private val context: Context) {
      * để tương thích trơn tru với các lệnh FFmpeg.
      */
     fun getSafParameter(uri: Uri, mode: String = "r"): String? {
-        return FFmpegKitConfig.getSafParameterForRead(context, uri)
+        return try {
+            FFmpegKitConfig.getSafParameterForRead(context, uri)
+        } catch (e: Throwable) {
+            null
+        }
     }
 }

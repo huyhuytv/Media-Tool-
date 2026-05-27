@@ -87,94 +87,107 @@ fun TrimScreen(navController: NavController) {
     }
 
     fun startTrim() {
-        val uri = selectedUri
-        if (uri == null) {
-            Toast.makeText(context, "Vui lòng chọn file", Toast.LENGTH_SHORT).show()
-            return
-        }
-        
-        val startSec = getSeconds(startMs)
-        val endSec = getSeconds(endMs)
-        
-        if (endSec <= startSec && endSec > 0) {
-            Toast.makeText(context, "Mốc kết thúc phải lớn hơn bắt đầu", Toast.LENGTH_SHORT).show()
-            return
-        }
-        
-        val safPath = mediaEngine.getSafParameter(uri)
-        if (safPath == null) {
-            Toast.makeText(context, "Không thể đọc file", Toast.LENGTH_SHORT).show()
-            return
-        }
-        
-        val outputDir = File(context.cacheDir, "trim_outputs").apply { mkdirs() }
-        val isAudio = fileName.endsWith(".mp3", true) || fileName.endsWith(".m4a", true) || 
-                      fileName.endsWith(".wav", true) || fileName.endsWith(".flac", true) || 
-                      fileName.endsWith(".ogg", true) || fileName.endsWith(".aac", true)
-        
-        val ext = if (isAudio) {
-            if (com.example.core.SettingsManager.isAudioLossless(context)) {
-                if (fileName.contains(".")) fileName.substringAfterLast(".") else "m4a"
-            } else {
-                com.example.core.SettingsManager.getAudioFormatExt(context)
+        try {
+            val uri = selectedUri
+            if (uri == null) {
+                Toast.makeText(context, "Vui lòng chọn file", Toast.LENGTH_SHORT).show()
+                return
             }
-        } else {
-            if (fileName.contains(".")) fileName.substringAfterLast(".") else "mp4"
-        }
-        val outputFile = File(outputDir, "trimmed_${System.currentTimeMillis()}.$ext")
-        
-        val duration = if (endSec > 0) endSec - startSec else 0.0
-        val durationArg = if (duration > 0) "-t $duration" else ""
-                      
-        // Với audio, render lại hoàn thiện chuẩn từ Settings.
-        val codecArg = if (isAudio) {
-            if (com.example.core.SettingsManager.isAudioLossless(context)) {
-                "-c copy" // Cắt copy cho audio nếu chọn lossless (Tốc độ siêu nhanh, giữ nguyên chất lượng gốc)
-            } else {
-                val acodec = com.example.core.SettingsManager.getAudioCodecArg(context)
-                val abitrate = com.example.core.SettingsManager.getAudioBitrateArg(context)
-                // Flac/Wav không cấu hình bitrate vì đã xuất không nén (lossless by nature)
-                if (acodec.contains("flac") || acodec.contains("pcm")) {
-                    acodec
+            
+            val startSec = getSeconds(startMs)
+            val endSec = getSeconds(endMs)
+            
+            if (endSec <= startSec && endSec > 0) {
+                Toast.makeText(context, "Mốc kết thúc phải lớn hơn bắt đầu", Toast.LENGTH_SHORT).show()
+                return
+            }
+            
+            val safPath = mediaEngine.getSafParameter(uri)
+            if (safPath == null) {
+                Toast.makeText(context, "Không thể đọc file", Toast.LENGTH_SHORT).show()
+                return
+            }
+            
+            val outputDir = File(context.cacheDir, "trim_outputs").apply { mkdirs() }
+            val isAudio = fileName.endsWith(".mp3", true) || fileName.endsWith(".m4a", true) || 
+                          fileName.endsWith(".wav", true) || fileName.endsWith(".flac", true) || 
+                          fileName.endsWith(".ogg", true) || fileName.endsWith(".aac", true)
+            
+            val ext = if (isAudio) {
+                if (com.example.core.SettingsManager.isAudioLossless(context)) {
+                    if (fileName.contains(".")) fileName.substringAfterLast(".") else "m4a"
                 } else {
-                    "$acodec $abitrate"
+                    com.example.core.SettingsManager.getAudioFormatExt(context)
                 }
+            } else {
+                if (fileName.contains(".")) fileName.substringAfterLast(".") else "mp4"
             }
-        } else {
-            "-c copy" // Video tạm thời giữ nguyên
-        }
-        
-        val command = "-y -ss $startSec -i \"$safPath\" $durationArg $codecArg \"${outputFile.absolutePath}\""
-        
-        isProcessing = true
-        progressMsg = "Đang xử lý..."
-        hasOutput = false
-        
-        coroutineScope.launch {
-            mediaEngine.executeFFmpegCommand(command).collect { state ->
-                withContext(Dispatchers.Main) {
-                    when (state) {
-                        is MediaEngine.ExecutionState.Connecting -> {
-                            progressMsg = "Đang kết nối..."
+            val outputFile = File(outputDir, "trimmed_${System.currentTimeMillis()}.$ext")
+            
+            val duration = if (endSec > 0) endSec - startSec else 0.0
+            val durationArg = if (duration > 0) "-t $duration" else ""
+                          
+            // Với audio, render lại hoàn thiện chuẩn từ Settings.
+            val codecArg = if (isAudio) {
+                if (com.example.core.SettingsManager.isAudioLossless(context)) {
+                    "-c copy" // Cắt copy cho audio nếu chọn lossless (Tốc độ siêu nhanh, giữ nguyên chất lượng gốc)
+                } else {
+                    val acodec = com.example.core.SettingsManager.getAudioCodecArg(context)
+                    val abitrate = com.example.core.SettingsManager.getAudioBitrateArg(context)
+                    // Flac/Wav không cấu hình bitrate vì đã xuất không nén (lossless by nature)
+                    if (acodec.contains("flac") || acodec.contains("pcm")) {
+                        acodec
+                    } else {
+                        "$acodec $abitrate"
+                    }
+                }
+            } else {
+                "-c copy" // Video tạm thời giữ nguyên
+            }
+            
+            val command = "-y -ss $startSec -i \"$safPath\" $durationArg $codecArg \"${outputFile.absolutePath}\""
+            
+            isProcessing = true
+            progressMsg = "Đang xử lý..."
+            hasOutput = false
+            
+            coroutineScope.launch {
+                try {
+                    mediaEngine.executeFFmpegCommand(command).collect { state ->
+                        withContext(Dispatchers.Main) {
+                            when (state) {
+                                is MediaEngine.ExecutionState.Connecting -> {
+                                    progressMsg = "Đang kết nối..."
+                                }
+                                is MediaEngine.ExecutionState.Progress -> {
+                                    progressMsg = "Đang cắt: ${state.timeInMilliseconds}ms"
+                                }
+                                is MediaEngine.ExecutionState.Success -> {
+                                    progressMsg = "Cắt thành công!"
+                                    isProcessing = false
+                                    hasOutput = true
+                                    outputPath = outputFile.absolutePath
+                                    Toast.makeText(context, "Cắt thành công!", Toast.LENGTH_SHORT).show()
+                                }
+                                is MediaEngine.ExecutionState.Error -> {
+                                    progressMsg = "Lỗi: ${state.returnCode}"
+                                    isProcessing = false
+                                    Toast.makeText(context, "Lỗi cắt file", Toast.LENGTH_LONG).show()
+                                }
+                            }
                         }
-                        is MediaEngine.ExecutionState.Progress -> {
-                            progressMsg = "Đang cắt: ${state.timeInMilliseconds}ms"
-                        }
-                        is MediaEngine.ExecutionState.Success -> {
-                            progressMsg = "Cắt thành công!"
-                            isProcessing = false
-                            hasOutput = true
-                            outputPath = outputFile.absolutePath
-                            Toast.makeText(context, "Cắt thành công!", Toast.LENGTH_SHORT).show()
-                        }
-                        is MediaEngine.ExecutionState.Error -> {
-                            progressMsg = "Lỗi: ${state.returnCode}"
-                            isProcessing = false
-                            Toast.makeText(context, "Lỗi cắt file", Toast.LENGTH_LONG).show()
-                        }
+                    }
+                } catch(e: Throwable) {
+                    withContext(Dispatchers.Main) {
+                        progressMsg = "Ngoại lệ: ${e.message}"
+                        isProcessing = false
+                        Toast.makeText(context, "Lỗi Coroutine: ${e.message}", Toast.LENGTH_LONG).show()
                     }
                 }
             }
+        } catch (e: Throwable) {
+            Toast.makeText(context, "Lỗi khi bắt đầu: ${e.message}", Toast.LENGTH_LONG).show()
+            isProcessing = false
         }
     }
 
@@ -214,8 +227,8 @@ fun TrimScreen(navController: NavController) {
                         OutlinedTextField(
                             value = startMs,
                             onValueChange = { startMs = it.filter { char -> char.isDigit() } },
-                            modifier = Modifier.weight(1f).semantics { contentDescription = "Ô nhập mốc thời gian bắt đầu tính bằng mili giây" },
-                            label = { Text("Bắt đầu") },
+                            modifier = Modifier.weight(1f),
+                            label = { Text("Bắt đầu (mili giây)") },
                             placeholder = { Text("0") },
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next)
@@ -232,8 +245,8 @@ fun TrimScreen(navController: NavController) {
                         OutlinedTextField(
                             value = endMs,
                             onValueChange = { endMs = it.filter { char -> char.isDigit() } },
-                            modifier = Modifier.weight(1f).semantics { contentDescription = "Ô nhập mốc thời gian kết thúc tính bằng mili giây, nhập 0 để cắt đến hết" },
-                            label = { Text("Kết thúc") },
+                            modifier = Modifier.weight(1f),
+                            label = { Text("Kết thúc (mili giây)") },
                             placeholder = { Text("0") },
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done)
@@ -292,25 +305,29 @@ fun TrimScreen(navController: NavController) {
 
 fun getFileName(context: android.content.Context, uri: Uri): String? {
     var result: String? = null
-    if (uri.scheme == "content") {
-        val cursor = context.contentResolver.query(uri, null, null, null, null)
-        try {
-            if (cursor != null && cursor.moveToFirst()) {
-                val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (index != -1) {
-                    result = cursor.getString(index)
+    try {
+        if (uri.scheme == "content") {
+            val cursor = context.contentResolver.query(uri, null, null, null, null)
+            try {
+                if (cursor != null && cursor.moveToFirst()) {
+                    val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (index != -1) {
+                        result = cursor.getString(index)
+                    }
                 }
+            } finally {
+                cursor?.close()
             }
-        } finally {
-            cursor?.close()
         }
-    }
-    if (result == null) {
-        result = uri.path
-        val cut = result?.lastIndexOf('/') ?: -1
-        if (cut != -1) {
-            result = result?.substring(cut + 1)
+        if (result == null) {
+            result = uri.path
+            val cut = result?.lastIndexOf('/') ?: -1
+            if (cut != -1) {
+                result = result?.substring(cut + 1)
+            }
         }
+    } catch (e: Exception) {
+        result = "unknown_file_${System.currentTimeMillis()}"
     }
     return result
 }

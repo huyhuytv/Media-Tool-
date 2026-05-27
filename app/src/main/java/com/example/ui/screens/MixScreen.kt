@@ -181,131 +181,144 @@ fun MixScreen(navController: NavController) {
     }
 
     fun startProcessing() {
-        if (baseUri == null || bgAudios.isEmpty()) {
-            Toast.makeText(context, "Cần 1 File gốc và ít nhất 1 Nhạc nền", Toast.LENGTH_SHORT).show()
-            return
-        }
-        
-        isProcessing = true
-        progressMsg = "Đang chuẩn bị ghép..."
-        hasOutput = false
-        
-        coroutineScope.launch {
-            val baseSaf = mediaEngine.getSafParameter(baseUri!!)
-            if (baseSaf == null) {
-                withContext(Dispatchers.Main) { Toast.makeText(context, "Lỗi đọc file gốc", Toast.LENGTH_SHORT).show(); isProcessing=false }
-                return@launch
+        try {
+            if (baseUri == null || bgAudios.isEmpty()) {
+                Toast.makeText(context, "Cần 1 File gốc và ít nhất 1 Nhạc nền", Toast.LENGTH_SHORT).show()
+                return
             }
             
-            val ext = if (isMixModeVideo) "mp4" else com.example.core.SettingsManager.getAudioFormatExt(context)
-            val outputDir = File(context.cacheDir, "mix_outputs").apply { mkdirs() }
-            val outputFile = File(outputDir, "mixed_${System.currentTimeMillis()}.$ext")
+            isProcessing = true
+            progressMsg = "Đang chuẩn bị ghép..."
+            hasOutput = false
             
-            val amixDuration = if (isMixModeVideo || loopBg) "first" else "longest"
-            
-            // Build filter_complex string
-            val filter = java.lang.StringBuilder()
-            
-            // Build inputs with pre-trimming using -ss and -to for exact A/V sync without complex filter logic
-            val inputArgs = java.lang.StringBuilder()
-            
-            val baseStartSec = baseStarts.split(",").firstOrNull()?.trim()?.toDoubleOrNull()?.div(1000.0) ?: 0.0
-            val baseEndSec = baseEnds.split(",").firstOrNull()?.trim()?.toDoubleOrNull()?.div(1000.0) ?: 0.0
-            if (baseStartSec > 0f) inputArgs.append("-ss $baseStartSec ")
-            if (baseEndSec > baseStartSec) inputArgs.append("-to $baseEndSec ")
-            inputArgs.append("-i \"$baseSaf\" ")
-
-            bgAudios.forEach { bg ->
-                val bgSaf = mediaEngine.getSafParameter(bg.uri)
-                if (bgSaf != null) {
-                    val bgStartSec = bg.starts.split(",").firstOrNull()?.trim()?.toDoubleOrNull()?.div(1000.0) ?: 0.0
-                    val bgEndSec = bg.ends.split(",").firstOrNull()?.trim()?.toDoubleOrNull()?.div(1000.0) ?: 0.0
+            coroutineScope.launch {
+                try {
+                    val baseSaf = mediaEngine.getSafParameter(baseUri!!)
+                    if (baseSaf == null) {
+                        withContext(Dispatchers.Main) { Toast.makeText(context, "Lỗi đọc file gốc", Toast.LENGTH_SHORT).show(); isProcessing=false }
+                        return@launch
+                    }
                     
-                    if (loopBg) inputArgs.append("-stream_loop -1 ")
-                    if (bgStartSec > 0f) inputArgs.append("-ss $bgStartSec ")
-                    if (bgEndSec > bgStartSec) inputArgs.append("-to $bgEndSec ")
-                    inputArgs.append("-i \"$bgSaf\" ")
-                }
-            }
+                    val ext = if (isMixModeVideo) "mp4" else com.example.core.SettingsManager.getAudioFormatExt(context)
+                    val outputDir = File(context.cacheDir, "mix_outputs").apply { mkdirs() }
+                    val outputFile = File(outputDir, "mixed_${System.currentTimeMillis()}.$ext")
+                    
+                    val amixDuration = if (isMixModeVideo || loopBg) "first" else "longest"
+                    
+                    // Build filter_complex string
+                    val filter = java.lang.StringBuilder()
+                    
+                    // Build inputs with pre-trimming using -ss and -to for exact A/V sync without complex filter logic
+                    val inputArgs = java.lang.StringBuilder()
+                    
+                    val baseStartSec = baseStarts.split(",").firstOrNull()?.trim()?.toDoubleOrNull()?.div(1000.0) ?: 0.0
+                    val baseEndSec = baseEnds.split(",").firstOrNull()?.trim()?.toDoubleOrNull()?.div(1000.0) ?: 0.0
+                    if (baseStartSec > 0f) inputArgs.append("-ss $baseStartSec ")
+                    if (baseEndSec > baseStartSec) inputArgs.append("-to $baseEndSec ")
+                    inputArgs.append("-i \"$baseSaf\" ")
 
-            val numInputs = 1 + bgAudios.size
-            if (muteBaseVideo) {
-                filter.append("[0:a]volume=0,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a0]; ")
-            } else {
-                val v = baseVolume
-                val Lvol = if (basePan <= 50) 1f else (100 - basePan) / 50f
-                val Rvol = if (basePan >= 50) 1f else basePan / 50f
-                
-                filter.append("[0:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=${v},pan=stereo|c0=${Lvol}*c0|c1=${Rvol}*c1[a0]; ")
-            }
-            
-            bgAudios.forEachIndexed { i, bg ->
-                val v = bg.volume
-                val Lvol = if (bg.pan <= 50) 1f else (100 - bg.pan) / 50f
-                val Rvol = if (bg.pan >= 50) 1f else bg.pan / 50f
-                
-                filter.append("[${i+1}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=${v},pan=stereo|c0=${Lvol}*c0|c1=${Rvol}*c1[a${i+1}]; ")
-            }
-            
-            if (autoDuck && !muteBaseVideo && bgAudios.isNotEmpty()) {
-                // Ducking (Sidechain compression)
-                for (i in 1..bgAudios.size) {
-                    filter.append("[a$i]")
-                }
-                if (bgAudios.size > 1) {
-                    // Let the background mix be 'longest' so it doesn't get cut off prematurely before ducking
-                    filter.append("amix=inputs=${bgAudios.size}:duration=longest:dropout_transition=2:normalize=0[bg_mixed]; ")
-                } else {
-                    filter.append("volume=1[bg_mixed]; ")
-                }
-                
-                // Tách âm thanh gốc thành 2 đường: 1 để ghép đầu ra, 1 để làm sidechain điều khiển
-                filter.append("[a0]asplit=2[base_out][base_sc]; ")
-                
-                // Áp dụng hiệu ứng sidechaincompress (Bóp âm lượng bg_mixed dựa trên base_sc)
-                filter.append("[bg_mixed][base_sc]sidechaincompress=threshold=0.08:ratio=5.0:attack=100:release=1000[bg_ducked]; ")
-                
-                // Ghép đường âm thanh gốc (base_out) với nhạc nền đã được tự động ducking (bg_ducked)
-                // final duration=first ensures the output follows the length of base_out (video)
-                filter.append("[base_out][bg_ducked]amix=inputs=2:duration=${amixDuration}:dropout_transition=2:normalize=0[mixed_uncapped]; ")
-            } else {
-                for (i in 0 until numInputs) {
-                    filter.append("[a$i]")
-                }
-                // normalize=0 ngăn chặn việc FFmpeg tự động giảm âm lượng tổng thể xuống (vd 3 input thì chia 3) gây nhỏ tiếng nghiêm trọng
-                filter.append("amix=inputs=$numInputs:duration=${amixDuration}:dropout_transition=2:normalize=0[mixed_uncapped]; ")
-            }
-            // Thêm Limiter ở bước cuối cùng để chống xé tiếng (clipping) nếu tổng âm lượng vượt quá 0dB
-            filter.append("[mixed_uncapped]alimiter=limit=-0.1dB:level_in=1:level_out=1[outa]")
-            
-            val acodec = if (isMixModeVideo) "-c:a aac" else com.example.core.SettingsManager.getAudioCodecArg(context)
-            val abitrateArg = com.example.core.SettingsManager.getAudioBitrateArg(context)
-            val abitrate = if (isMixModeVideo || !(acodec.contains("flac") || acodec.contains("pcm"))) abitrateArg else ""
-            
-            val vcodec = if (isMixModeVideo) "-c:v copy" else ""
-            val maps = if (isMixModeVideo) "-map 0:v? -map \"[outa]\"" else "-map \"[outa]\""
-            
-            val command = "-y $inputArgs -filter_complex \"$filter\" $maps $vcodec $acodec $abitrate \"${outputFile.absolutePath}\""
-            
-            mediaEngine.executeFFmpegCommand(command).collect { state ->
-                withContext(Dispatchers.Main) {
-                    when (state) {
-                        is MediaEngine.ExecutionState.Connecting -> progressMsg = "Khởi tạo..."
-                        is MediaEngine.ExecutionState.Progress -> progressMsg = "Đang xử lý: ${state.timeInMilliseconds}ms"
-                        is MediaEngine.ExecutionState.Success -> {
-                            progressMsg = "Ghép thành công!"
-                            isProcessing = false
-                            hasOutput = true
-                            outputPath = outputFile.absolutePath
+                    bgAudios.forEach { bg ->
+                        val bgSaf = mediaEngine.getSafParameter(bg.uri)
+                        if (bgSaf != null) {
+                            val bgStartSec = bg.starts.split(",").firstOrNull()?.trim()?.toDoubleOrNull()?.div(1000.0) ?: 0.0
+                            val bgEndSec = bg.ends.split(",").firstOrNull()?.trim()?.toDoubleOrNull()?.div(1000.0) ?: 0.0
+                            
+                            if (loopBg) inputArgs.append("-stream_loop -1 ")
+                            if (bgStartSec > 0f) inputArgs.append("-ss $bgStartSec ")
+                            if (bgEndSec > bgStartSec) inputArgs.append("-to $bgEndSec ")
+                            inputArgs.append("-i \"$bgSaf\" ")
                         }
-                        is MediaEngine.ExecutionState.Error -> {
-                            progressMsg = "Lỗi FFmpeg."
-                            isProcessing = false
-                            Toast.makeText(context, "Ghép thất bại!", Toast.LENGTH_SHORT).show()
+                    }
+
+                    val numInputs = 1 + bgAudios.size
+                    if (muteBaseVideo) {
+                        filter.append("[0:a]volume=0,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a0]; ")
+                    } else {
+                        val v = baseVolume
+                        val Lvol = if (basePan <= 50) 1f else (100 - basePan) / 50f
+                        val Rvol = if (basePan >= 50) 1f else basePan / 50f
+                        
+                        filter.append("[0:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=${v},pan=stereo|c0=${Lvol}*c0|c1=${Rvol}*c1[a0]; ")
+                    }
+                    
+                    bgAudios.forEachIndexed { i, bg ->
+                        val v = bg.volume
+                        val Lvol = if (bg.pan <= 50) 1f else (100 - bg.pan) / 50f
+                        val Rvol = if (bg.pan >= 50) 1f else bg.pan / 50f
+                        
+                        filter.append("[${i+1}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=${v},pan=stereo|c0=${Lvol}*c0|c1=${Rvol}*c1[a${i+1}]; ")
+                    }
+                    
+                    if (autoDuck && !muteBaseVideo && bgAudios.isNotEmpty()) {
+                        // Ducking (Sidechain compression)
+                        for (i in 1..bgAudios.size) {
+                            filter.append("[a$i]")
                         }
+                        if (bgAudios.size > 1) {
+                            // Let the background mix be 'longest' so it doesn't get cut off prematurely before ducking
+                            filter.append("amix=inputs=${bgAudios.size}:duration=longest:dropout_transition=2:normalize=0[bg_mixed]; ")
+                        } else {
+                            filter.append("volume=1[bg_mixed]; ")
+                        }
+                        
+                        // Tách âm thanh gốc thành 2 đường: 1 để ghép đầu ra, 1 để làm sidechain điều khiển
+                        filter.append("[a0]asplit=2[base_out][base_sc]; ")
+                        
+                        // Áp dụng hiệu ứng sidechaincompress (Bóp âm lượng bg_mixed dựa trên base_sc)
+                        filter.append("[bg_mixed][base_sc]sidechaincompress=threshold=0.08:ratio=5.0:attack=100:release=1000[bg_ducked]; ")
+                        
+                        // Ghép đường âm thanh gốc (base_out) với nhạc nền đã được tự động ducking (bg_ducked)
+                        // final duration=first ensures the output follows the length of base_out (video)
+                        filter.append("[base_out][bg_ducked]amix=inputs=2:duration=${amixDuration}:dropout_transition=2:normalize=0[mixed_uncapped]; ")
+                    } else {
+                        for (i in 0 until numInputs) {
+                            filter.append("[a$i]")
+                        }
+                        // normalize=0 ngăn chặn việc FFmpeg tự động giảm âm lượng tổng thể xuống (vd 3 input thì chia 3) gây nhỏ tiếng nghiêm trọng
+                        filter.append("amix=inputs=$numInputs:duration=${amixDuration}:dropout_transition=2:normalize=0[mixed_uncapped]; ")
+                    }
+                    // Thêm Limiter ở bước cuối cùng để chống xé tiếng (clipping) nếu tổng âm lượng vượt quá 0dB
+                    filter.append("[mixed_uncapped]alimiter=limit=-0.1dB:level_in=1:level_out=1[outa]")
+                    
+                    val acodec = if (isMixModeVideo) "-c:a aac" else com.example.core.SettingsManager.getAudioCodecArg(context)
+                    val abitrateArg = com.example.core.SettingsManager.getAudioBitrateArg(context)
+                    val abitrate = if (isMixModeVideo || !(acodec.contains("flac") || acodec.contains("pcm"))) abitrateArg else ""
+                    
+                    val vcodec = if (isMixModeVideo) "-c:v copy" else ""
+                    val maps = if (isMixModeVideo) "-map 0:v? -map \"[outa]\"" else "-map \"[outa]\""
+                    
+                    val command = "-y $inputArgs -filter_complex \"$filter\" $maps $vcodec $acodec $abitrate \"${outputFile.absolutePath}\""
+                    
+                    mediaEngine.executeFFmpegCommand(command).collect { state ->
+                        withContext(Dispatchers.Main) {
+                            when (state) {
+                                is MediaEngine.ExecutionState.Connecting -> progressMsg = "Khởi tạo..."
+                                is MediaEngine.ExecutionState.Progress -> progressMsg = "Đang xử lý: ${state.timeInMilliseconds}ms"
+                                is MediaEngine.ExecutionState.Success -> {
+                                    progressMsg = "Ghép thành công!"
+                                    isProcessing = false
+                                    hasOutput = true
+                                    outputPath = outputFile.absolutePath
+                                }
+                                is MediaEngine.ExecutionState.Error -> {
+                                    progressMsg = "Lỗi FFmpeg."
+                                    isProcessing = false
+                                    Toast.makeText(context, "Ghép thất bại!", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
+                    }
+                } catch(e: Throwable) {
+                    withContext(Dispatchers.Main) {
+                        progressMsg = "Ngoại lệ: ${e.message}"
+                        isProcessing = false
+                        Toast.makeText(context, "Lỗi Coroutine: ${e.message}", Toast.LENGTH_LONG).show()
                     }
                 }
             }
+        } catch(e: Throwable) {
+            Toast.makeText(context, "Lỗi khi bắt đầu: ${e.message}", Toast.LENGTH_LONG).show()
+            isProcessing = false
         }
     }
 
@@ -352,9 +365,9 @@ fun MixScreen(navController: NavController) {
             
             OutlinedTextField(
                 value = baseStarts,
-                onValueChange = { baseStarts = it },
-                label = { Text("Mốc Bắt đầu Gốc (ms)") },
-                modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Nhập mốc bắt đầu file gốc tính bằng mili giây" },
+                onValueChange = { baseStarts = it.filter { char -> char.isDigit() } },
+                label = { Text("Mốc Bắt đầu Gốc (mili giây)") },
+                modifier = Modifier.fillMaxWidth(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
             )
             Button(onClick = { 
@@ -365,9 +378,9 @@ fun MixScreen(navController: NavController) {
             
             OutlinedTextField(
                 value = baseEnds,
-                onValueChange = { baseEnds = it },
-                label = { Text("Mốc Kết thúc Gốc (ms)") },
-                modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Nhập mốc kết thúc file gốc tính bằng mili giây" },
+                onValueChange = { baseEnds = it.filter { char -> char.isDigit() } },
+                label = { Text("Mốc Kết thúc Gốc (mili giây)") },
+                modifier = Modifier.fillMaxWidth(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
             )
             Button(onClick = { 
@@ -434,16 +447,16 @@ fun MixScreen(navController: NavController) {
                         
                         OutlinedTextField(
                             value = audio.starts,
-                            onValueChange = { bgAudios[index] = audio.copy(starts = it) },
-                            label = { Text("Bắt đầu (ms)") },
-                            modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Nhập mốc bắt đầu cho nhạc nền ${index + 1} tính bằng mili giây" },
+                            onValueChange = { newValue -> bgAudios[index] = audio.copy(starts = newValue.filter { it.isDigit() }) },
+                            label = { Text("Bắt đầu (mili giây)") },
+                            modifier = Modifier.fillMaxWidth(),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
                         )
                         OutlinedTextField(
                             value = audio.ends,
-                            onValueChange = { bgAudios[index] = audio.copy(ends = it) },
-                            label = { Text("Kết thúc (ms)") },
-                            modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Nhập mốc kết thúc cho nhạc nền ${index + 1} tính bằng mili giây" },
+                            onValueChange = { newValue -> bgAudios[index] = audio.copy(ends = newValue.filter { it.isDigit() }) },
+                            label = { Text("Kết thúc (mili giây)") },
+                            modifier = Modifier.fillMaxWidth(),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
                         )
                         

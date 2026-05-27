@@ -73,57 +73,70 @@ fun SubScreen(navController: NavController) {
     }
     
     fun startExtractSubtitles() {
-        if (selectedUri == null) {
-            Toast.makeText(context, "Vui lòng chọn video!", Toast.LENGTH_SHORT).show()
-            return
-        }
-        
-        isProcessing = true
-        progressMsg = "Đang kiểm tra và trích xuất..."
-        hasOutput = false
-        
-        coroutineScope.launch {
-            val safPath = mediaEngine.getSafParameter(selectedUri!!)
-            if (safPath == null) {
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(context, "Lỗi đọc file!", Toast.LENGTH_SHORT).show()
-                    isProcessing = false
-                }
-                return@launch
+        try {
+            if (selectedUri == null) {
+                Toast.makeText(context, "Vui lòng chọn video!", Toast.LENGTH_SHORT).show()
+                return
             }
             
-            val outputDir = File(context.cacheDir, "subs_output").apply { mkdirs() }
-            val outputFile = File(outputDir, "subtitles_${System.currentTimeMillis()}.srt")
+            isProcessing = true
+            progressMsg = "Đang kiểm tra và trích xuất..."
+            hasOutput = false
             
-            // Lệnh lấy stream phụ đề đầu tiên (0:s:0)
-            val command = "-y -i \"$safPath\" -map 0:s:0 -c:s srt \"${outputFile.absolutePath}\""
-            
-            mediaEngine.executeFFmpegCommand(command).collect { state ->
-                withContext(Dispatchers.Main) {
-                    when (state) {
-                        is MediaEngine.ExecutionState.Connecting -> progressMsg = "Đang bắt đầu..."
-                        is MediaEngine.ExecutionState.Progress -> progressMsg = "Đang xử lý..."
-                        is MediaEngine.ExecutionState.Success -> {
+            coroutineScope.launch {
+                try {
+                    val safPath = mediaEngine.getSafParameter(selectedUri!!)
+                    if (safPath == null) {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "Lỗi đọc file!", Toast.LENGTH_SHORT).show()
                             isProcessing = false
-                            if (outputFile.exists() && outputFile.length() > 0) {
-                                progressMsg = "Trích xuất thành công!"
-                                hasOutput = true
-                                outputPath = outputFile.absolutePath
-                                Toast.makeText(context, "Đã trích xuất phụ đề!", Toast.LENGTH_SHORT).show()
-                            } else {
-                                progressMsg = "Lỗi: Không tìm thấy phụ đề trong video."
-                                outputFile.delete()
-                                Toast.makeText(context, "Video không chứa phụ đề!", Toast.LENGTH_LONG).show()
+                        }
+                        return@launch
+                    }
+                    
+                    val outputDir = File(context.cacheDir, "subs_output").apply { mkdirs() }
+                    val outputFile = File(outputDir, "subtitles_${System.currentTimeMillis()}.srt")
+                    
+                    // Lệnh lấy stream phụ đề đầu tiên (0:s:0)
+                    val command = "-y -i \"$safPath\" -map 0:s:0 -c:s srt \"${outputFile.absolutePath}\""
+                    
+                    mediaEngine.executeFFmpegCommand(command).collect { state ->
+                        withContext(Dispatchers.Main) {
+                            when (state) {
+                                is MediaEngine.ExecutionState.Connecting -> progressMsg = "Đang bắt đầu..."
+                                is MediaEngine.ExecutionState.Progress -> progressMsg = "Đang xử lý..."
+                                is MediaEngine.ExecutionState.Success -> {
+                                    isProcessing = false
+                                    if (outputFile.exists() && outputFile.length() > 0) {
+                                        progressMsg = "Trích xuất thành công!"
+                                        hasOutput = true
+                                        outputPath = outputFile.absolutePath
+                                        Toast.makeText(context, "Đã trích xuất phụ đề!", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        progressMsg = "Lỗi: Không tìm thấy phụ đề trong video."
+                                        outputFile.delete()
+                                        Toast.makeText(context, "Video không chứa phụ đề!", Toast.LENGTH_LONG).show()
+                                    }
+                                }
+                                is MediaEngine.ExecutionState.Error -> {
+                                    isProcessing = false
+                                    progressMsg = "Lập tức hoàn tất (Video không có phụ đề hoặc không hỗ trợ)."
+                                    Toast.makeText(context, "Video này không có luồng phụ đề (Subtitle Stream) đính kèm!", Toast.LENGTH_LONG).show()
+                                }
                             }
                         }
-                        is MediaEngine.ExecutionState.Error -> {
-                            isProcessing = false
-                            progressMsg = "Lập tức hoàn tất (Video không có phụ đề hoặc không hỗ trợ)."
-                            Toast.makeText(context, "Video này không có luồng phụ đề (Subtitle Stream) đính kèm!", Toast.LENGTH_LONG).show()
-                        }
+                    }
+                } catch(e: Throwable) {
+                    withContext(Dispatchers.Main) {
+                        progressMsg = "Ngoại lệ: ${e.message}"
+                        isProcessing = false
+                        Toast.makeText(context, "Lỗi: ${e.message}", Toast.LENGTH_LONG).show()
                     }
                 }
             }
+        } catch(e: Throwable) {
+            Toast.makeText(context, "Lỗi: ${e.message}", Toast.LENGTH_LONG).show()
+            isProcessing = false
         }
     }
 

@@ -238,32 +238,40 @@ fun OtherScreen(navController: NavController) {
                                 is MediaEngine.ExecutionState.Progress -> statusText = "Đang trích xuất ảnh..."
                                 is MediaEngine.ExecutionState.Success -> {
                                     coroutineScope.launch(Dispatchers.IO) {
-                                        val files = imgOutDir.listFiles()?.filter { it.extension == "jpg" }
-                                        if (!files.isNullOrEmpty()) {
-                                            var savedCount = 0
-                                            val resolver = context.contentResolver
-                                            files.forEachIndexed { i, file ->
-                                                val values = android.content.ContentValues().apply {
-                                                    put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, "TrichXuat_${System.currentTimeMillis()}_$i.jpg")
-                                                    put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
-                                                    put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_PICTURES + "/TrichXuatVideo")
-                                                }
-                                                val uri = resolver.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-                                                uri?.let {
-                                                    resolver.openOutputStream(it)?.use { out ->
-                                                        file.inputStream().use { inStream -> inStream.copyTo(out) }
+                                        try {
+                                            val files = imgOutDir.listFiles()?.filter { it.extension == "jpg" }
+                                            if (!files.isNullOrEmpty()) {
+                                                var savedCount = 0
+                                                val resolver = context.contentResolver
+                                                files.forEachIndexed { i, file ->
+                                                    val values = android.content.ContentValues().apply {
+                                                        put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, "TrichXuat_${System.currentTimeMillis()}_$i.jpg")
+                                                        put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+                                                        put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_PICTURES + "/TrichXuatVideo")
                                                     }
-                                                    savedCount++
+                                                    val uri = resolver.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                                                    uri?.let {
+                                                        resolver.openOutputStream(it)?.use { out ->
+                                                            file.inputStream().use { inStream -> inStream.copyTo(out) }
+                                                        }
+                                                        savedCount++
+                                                    }
+                                                }
+                                                withContext(Dispatchers.Main) {
+                                                    statusText = "Thành công! Đã lưu $savedCount ảnh vào Bộ sưu tập (Ảnh/TrichXuatVideo)."
+                                                    progress = 100f
+                                                    isProcessing = false
+                                                }
+                                            } else {
+                                                withContext(Dispatchers.Main) {
+                                                    statusText = "Lỗi: Không tìm thấy ảnh. Thời gian có thể bị lỗi."
+                                                    progress = 100f
+                                                    isProcessing = false
                                                 }
                                             }
+                                        } catch (e: Exception) {
                                             withContext(Dispatchers.Main) {
-                                                statusText = "Thành công! Đã lưu $savedCount ảnh vào Bộ sưu tập (Ảnh/TrichXuatVideo)."
-                                                progress = 100f
-                                                isProcessing = false
-                                            }
-                                        } else {
-                                            withContext(Dispatchers.Main) {
-                                                statusText = "Lỗi: Không tìm thấy ảnh. Thời gian có thể bị lỗi."
+                                                statusText = "Lỗi lưu ảnh: ${e.message}"
                                                 progress = 100f
                                                 isProcessing = false
                                             }
@@ -494,7 +502,7 @@ fun OtherScreen(navController: NavController) {
 
             if (isVideoMode && modeIndex == 3) {
                 Text("Nhập các mốc thời gian (giây) để cắt ảnh. Cách nhau bằng dấu phẩy.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                OutlinedTextField(value = imgExtractTimes, onValueChange = { imgExtractTimes = it }, placeholder = { Text("Ví dụ: 1.5, 5, 12") }, modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Nhập các mốc thời gian giây cách nhau bằng phẩy để trích xuất ảnh" })
+                OutlinedTextField(value = imgExtractTimes, onValueChange = { imgExtractTimes = it }, placeholder = { Text("Ví dụ: 1.5, 5, 12") }, label = { Text("Các mốc thời gian (giây)") }, modifier = Modifier.fillMaxWidth())
                 Text("* Ảnh sẽ tự động lưu vào Bộ sưu tập.", fontSize = 12.sp, color = Color(0xFF00AA00))
             }
 
@@ -535,8 +543,8 @@ fun OtherScreen(navController: NavController) {
                 fun TimeBlock(startMs: String, onStartChange: (String) -> Unit, endMs: String, onEndChange: (String) -> Unit, effectName: String) {
                     if (enableTimeMocks) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                            OutlinedTextField(value = startMs, onValueChange = onStartChange, modifier = Modifier.weight(1f).semantics { contentDescription = "Từ $effectName (ms)" }, label = { Text("Từ (ms)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-                            OutlinedTextField(value = endMs, onValueChange = onEndChange, modifier = Modifier.weight(1f).semantics { contentDescription = "Đến $effectName (ms)" }, label = { Text("Đến (ms)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                            OutlinedTextField(value = startMs, onValueChange = onStartChange, modifier = Modifier.weight(1f), label = { Text("Từ $effectName (ms)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                            OutlinedTextField(value = endMs, onValueChange = onEndChange, modifier = Modifier.weight(1f), label = { Text("Đến $effectName (ms)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
                         }
                         Spacer(modifier = Modifier.height(4.dp))
                     }

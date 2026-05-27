@@ -92,90 +92,101 @@ fun Img2VidScreen(navController: NavController) {
     }
 
     fun startCreateVideo() {
-        if (audioUri == null) {
-            Toast.makeText(context, "Vui lòng chọn âm thanh", Toast.LENGTH_SHORT).show()
-            return
-        }
-        if (selectedImageUris.isEmpty()) {
-            Toast.makeText(context, "Vui lòng chọn ít nhất 1 ảnh", Toast.LENGTH_SHORT).show()
-            return
-        }
-        
-        isProcessing = true
-        progressMsg = "Đang chuẩn bị..."
-        outputUri = null
-        
-        coroutineScope.launch {
-            val audioSaf = mediaEngine.getSafParameter(audioUri!!)
-            if (audioSaf == null) {
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(context, "Lỗi đọc file âm thanh", Toast.LENGTH_SHORT).show()
-                    isProcessing = false
-                }
-                return@launch
+        try {
+            if (audioUri == null) {
+                Toast.makeText(context, "Vui lòng chọn âm thanh", Toast.LENGTH_SHORT).show()
+                return
+            }
+            if (selectedImageUris.isEmpty()) {
+                Toast.makeText(context, "Vui lòng chọn ít nhất 1 ảnh", Toast.LENGTH_SHORT).show()
+                return
             }
             
-            val outputDir = File(context.cacheDir, "img2vid").apply { mkdirs() }
-            val outputFile = File(outputDir, "video_${System.currentTimeMillis()}.mp4")
+            isProcessing = true
+            progressMsg = "Đang chuẩn bị..."
+            outputUri = null
             
-            val scaleFilter = when (ratioIndex) {
-                0 -> "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2"
-                1 -> "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2"
-                else -> "scale=720:720:force_original_aspect_ratio=decrease,pad=720:720:(ow-iw)/2:(oh-ih)/2"
-            }
-            
-            val vPreset = com.example.core.SettingsManager.getVideoPresetArg(context)
-            val vBitrate = com.example.core.SettingsManager.getVideoBitrateArg(context)
-            // Lấy audio setting. MP4 container + libx264 tương thích tốt nhất với AAC.
-            // Nếu là lossless hoặc định dạng không nén (flac, wav), ta ép sang AAC 320kbps để đảm bảo file MP4 hoạt động trơn tru trên mọi loại thiết bị.
-            val rawCodec = com.example.core.SettingsManager.getAudioCodecArg(context)
-            val usesIncompatibleCodec = rawCodec.contains("flac") || rawCodec.contains("pcm")
-            val isLossless = com.example.core.SettingsManager.isAudioLossless(context)
-            
-            val aCodec = if (isLossless || usesIncompatibleCodec) "-c:a aac" else rawCodec
-            val aBitrate = if (isLossless || usesIncompatibleCodec) "-b:a ${com.example.core.SettingsManager.getAudioBitrateInt(context)/1000}k" else com.example.core.SettingsManager.getAudioBitrateArg(context)
-
-            val command = if (selectedImageUris.size == 1) {
-                val imgSaf = mediaEngine.getSafParameter(selectedImageUris.first())
-                "-y -loop 1 -framerate 1 -i \"$imgSaf\" -i \"$audioSaf\" -vf \"$scaleFilter\" -c:v libx264 $vPreset $vBitrate -tune stillimage $aCodec $aBitrate -pix_fmt yuv420p -shortest \"${outputFile.absolutePath}\""
-            } else {
-                val concatFile = File(context.cacheDir, "img_concat.txt")
-                val writer = FileWriter(concatFile)
-                selectedImageUris.forEach { uri ->
-                    val saf = mediaEngine.getSafParameter(uri)
-                    saf?.let {
-                        writer.write("file '${it.replace("'", "'\\''")}'\n")
-                        writer.write("duration 3\n")
+            coroutineScope.launch {
+                try {
+                    val audioSaf = mediaEngine.getSafParameter(audioUri!!)
+                    if (audioSaf == null) {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "Lỗi đọc file âm thanh", Toast.LENGTH_SHORT).show()
+                            isProcessing = false
+                        }
+                        return@launch
+                    }
+                    
+                    val outputDir = File(context.cacheDir, "img2vid").apply { mkdirs() }
+                    val outputFile = File(outputDir, "video_${System.currentTimeMillis()}.mp4")
+                    
+                    val scaleFilter = when (ratioIndex) {
+                        0 -> "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2"
+                        1 -> "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2"
+                        else -> "scale=720:720:force_original_aspect_ratio=decrease,pad=720:720:(ow-iw)/2:(oh-ih)/2"
+                    }
+                    
+                    val vPreset = com.example.core.SettingsManager.getVideoPresetArg(context)
+                    val vBitrate = com.example.core.SettingsManager.getVideoBitrateArg(context)
+                    val rawCodec = com.example.core.SettingsManager.getAudioCodecArg(context)
+                    val usesIncompatibleCodec = rawCodec.contains("flac") || rawCodec.contains("pcm")
+                    val isLossless = com.example.core.SettingsManager.isAudioLossless(context)
+                    
+                    val aCodec = if (isLossless || usesIncompatibleCodec) "-c:a aac" else rawCodec
+                    val aBitrate = if (isLossless || usesIncompatibleCodec) "-b:a ${com.example.core.SettingsManager.getAudioBitrateInt(context)/1000}k" else com.example.core.SettingsManager.getAudioBitrateArg(context)
+        
+                    val command = if (selectedImageUris.size == 1) {
+                        val imgSaf = mediaEngine.getSafParameter(selectedImageUris.first())
+                        "-y -loop 1 -framerate 1 -i \"$imgSaf\" -i \"$audioSaf\" -vf \"$scaleFilter\" -c:v libx264 $vPreset $vBitrate -tune stillimage $aCodec $aBitrate -pix_fmt yuv420p -shortest \"${outputFile.absolutePath}\""
+                    } else {
+                        val concatFile = File(context.cacheDir, "img_concat.txt")
+                        val writer = FileWriter(concatFile)
+                        selectedImageUris.forEach { uri ->
+                            val saf = mediaEngine.getSafParameter(uri)
+                            saf?.let {
+                                writer.write("file '${it.replace("'", "'\\''")}'\n")
+                                writer.write("duration 3\n")
+                            }
+                        }
+                        val lastSaf = mediaEngine.getSafParameter(selectedImageUris.last())
+                        lastSaf?.let {
+                            writer.write("file '${it.replace("'", "'\\''")}'\n")
+                        }
+                        writer.close()
+                        
+                        "-y -stream_loop -1 -f concat -safe 0 -i \"${concatFile.absolutePath}\" -i \"$audioSaf\" -vf \"$scaleFilter\" -c:v libx264 $vPreset $vBitrate -tune stillimage $aCodec $aBitrate -pix_fmt yuv420p -shortest \"${outputFile.absolutePath}\""
+                    }
+                    
+                    mediaEngine.executeFFmpegCommand(command).collect { state ->
+                        withContext(Dispatchers.Main) {
+                            when (state) {
+                                is MediaEngine.ExecutionState.Connecting -> progressMsg = "Đang bắt đầu..."
+                                is MediaEngine.ExecutionState.Progress -> progressMsg = "Đang xử lý tạo video..."
+                                is MediaEngine.ExecutionState.Success -> {
+                                    progressMsg = "Hoàn thành!"
+                                    isProcessing = false
+                                    outputUri = Uri.fromFile(outputFile)
+                                    Toast.makeText(context, "Tạo video thành công!", Toast.LENGTH_SHORT).show()
+                                }
+                                is MediaEngine.ExecutionState.Error -> {
+                                    progressMsg = "Lỗi tạo video!"
+                                    isProcessing = false
+                                    Toast.makeText(context, "Lỗi: ${state.returnCode}", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
+                    }
+                } catch(e: Throwable) {
+                    withContext(Dispatchers.Main) {
+                        progressMsg = "Ngoại lệ: ${e.message}"
+                        isProcessing = false
+                        Toast.makeText(context, "Lỗi: ${e.message}", Toast.LENGTH_LONG).show()
                     }
                 }
-                val lastSaf = mediaEngine.getSafParameter(selectedImageUris.last())
-                lastSaf?.let {
-                    writer.write("file '${it.replace("'", "'\\''")}'\n")
-                }
-                writer.close()
-                
-                "-y -stream_loop -1 -f concat -safe 0 -i \"${concatFile.absolutePath}\" -i \"$audioSaf\" -vf \"$scaleFilter\" -c:v libx264 $vPreset $vBitrate -tune stillimage $aCodec $aBitrate -pix_fmt yuv420p -shortest \"${outputFile.absolutePath}\""
             }
-            
-            mediaEngine.executeFFmpegCommand(command).collect { state ->
-                withContext(Dispatchers.Main) {
-                    when (state) {
-                        is MediaEngine.ExecutionState.Connecting -> progressMsg = "Đang bắt đầu..."
-                        is MediaEngine.ExecutionState.Progress -> progressMsg = "Đang xử lý tạo video..."
-                        is MediaEngine.ExecutionState.Success -> {
-                            progressMsg = "Hoàn thành!"
-                            isProcessing = false
-                            outputUri = Uri.fromFile(outputFile)
-                            Toast.makeText(context, "Tạo video thành công!", Toast.LENGTH_SHORT).show()
-                        }
-                        is MediaEngine.ExecutionState.Error -> {
-                            progressMsg = "Lỗi tạo video!"
-                            isProcessing = false
-                            Toast.makeText(context, "Lỗi: ${state.returnCode}", Toast.LENGTH_LONG).show()
-                        }
-                    }
-                }
-            }
+        } catch (e: Throwable) {
+            Toast.makeText(context, "Lỗi khi bắt đầu: ${e.message}", Toast.LENGTH_LONG).show()
+            isProcessing = false
         }
     }
 

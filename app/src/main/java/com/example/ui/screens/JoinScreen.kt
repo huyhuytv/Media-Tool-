@@ -72,74 +72,84 @@ fun JoinScreen(navController: NavController) {
     }
 
     fun startJoinAudio() {
-        if (selectedUris.size < 2) {
-            Toast.makeText(context, "Vui lòng chọn ít nhất 2 file để nối", Toast.LENGTH_SHORT).show()
-            return
-        }
+        try {
+            if (selectedUris.size < 2) {
+                Toast.makeText(context, "Vui lòng chọn ít nhất 2 file để nối", Toast.LENGTH_SHORT).show()
+                return
+            }
 
-        val safPaths = selectedUris.mapNotNull { mediaEngine.getSafParameter(it) }
-        if (safPaths.size != selectedUris.size) {
-            Toast.makeText(context, "Có lỗi khi đọc đường dẫn file", Toast.LENGTH_SHORT).show()
-            return
-        }
+            val safPaths = selectedUris.mapNotNull { mediaEngine.getSafParameter(it) }
+            if (safPaths.size != selectedUris.size) {
+                Toast.makeText(context, "Có lỗi khi đọc đường dẫn file gốc", Toast.LENGTH_SHORT).show()
+                return
+            }
 
-        isProcessing = true
-        progressMsg = "Đang chuẩn bị nối..."
-        hasOutput = false
+            isProcessing = true
+            progressMsg = "Đang chuẩn bị nối..."
+            hasOutput = false
 
-        val outputDir = File(context.cacheDir, "join_outputs").apply { mkdirs() }
-        val ext = com.example.core.SettingsManager.getAudioFormatExt(context)
-        val outputFile = File(outputDir, "joined_audio_${System.currentTimeMillis()}.$ext")
+            val outputDir = File(context.cacheDir, "join_outputs").apply { mkdirs() }
+            val ext = com.example.core.SettingsManager.getAudioFormatExt(context)
+            val outputFile = File(outputDir, "joined_audio_${System.currentTimeMillis()}.$ext")
 
-        // Sử dụng filter_complex để nối audio: Đồng bộ hoá sample rate về 48kHz, stereo channel, và định dạng sample = fltp để tránh lỗi treo do không tương thích
-        val inputs = safPaths.joinToString(" ") { "-i \"$it\"" }
-        val filter = StringBuilder()
-        for (i in safPaths.indices) {
-            filter.append("[$i:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a$i];")
-        }
-        for (i in safPaths.indices) {
-            filter.append("[a$i]")
-        }
-        filter.append("concat=n=${safPaths.size}:v=0:a=1[outa]")
+            val inputs = safPaths.joinToString(" ") { "-i \"$it\"" }
+            val filter = StringBuilder()
+            for (i in safPaths.indices) {
+                filter.append("[$i:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a$i];")
+            }
+            for (i in safPaths.indices) {
+                filter.append("[a$i]")
+            }
+            filter.append("concat=n=${safPaths.size}:v=0:a=1[outa]")
 
-        val acodec = com.example.core.SettingsManager.getAudioCodecArg(context)
-        val isLosslessSetting = com.example.core.SettingsManager.isAudioLossless(context)
-        
-        // Khi dùng filter_complex để nối, không thể dùng "-c copy". Cần phải chỉ định bitrate.
-        val abitrate = if (acodec.contains("flac") || acodec.contains("pcm")) {
-            "" // Định dạng uncompressed không cần tham số bitrate
-        } else {
-            if (isLosslessSetting) "-b:a ${com.example.core.SettingsManager.getAudioBitrateInt(context)/1000}k" else com.example.core.SettingsManager.getAudioBitrateArg(context)
-        }
+            val acodec = com.example.core.SettingsManager.getAudioCodecArg(context)
+            val isLosslessSetting = com.example.core.SettingsManager.isAudioLossless(context)
+            
+            val abitrate = if (acodec.contains("flac") || acodec.contains("pcm")) {
+                "" 
+            } else {
+                if (isLosslessSetting) "-b:a ${com.example.core.SettingsManager.getAudioBitrateInt(context)/1000}k" else com.example.core.SettingsManager.getAudioBitrateArg(context)
+            }
 
-        // re-encode theo chuẩn người dùng cấu hình ở Settings
-        val command = "-y $inputs -filter_complex \"$filter\" -map \"[outa]\" $acodec $abitrate \"${outputFile.absolutePath}\""
+            val command = "-y $inputs -filter_complex \"$filter\" -map \"[outa]\" $acodec $abitrate \"${outputFile.absolutePath}\""
 
-        coroutineScope.launch {
-            mediaEngine.executeFFmpegCommand(command).collect { state ->
-                withContext(Dispatchers.Main) {
-                    when (state) {
-                        is MediaEngine.ExecutionState.Connecting -> {
-                            progressMsg = "Đang khởi tạo FFmpeg..."
+            coroutineScope.launch {
+                try {
+                    mediaEngine.executeFFmpegCommand(command).collect { state ->
+                        withContext(Dispatchers.Main) {
+                            when (state) {
+                                is MediaEngine.ExecutionState.Connecting -> {
+                                    progressMsg = "Đang khởi tạo FFmpeg..."
+                                }
+                                is MediaEngine.ExecutionState.Progress -> {
+                                    progressMsg = "Đang xử lý: ${state.timeInMilliseconds} ms"
+                                }
+                                is MediaEngine.ExecutionState.Success -> {
+                                    progressMsg = "Nối thành công!"
+                                    isProcessing = false
+                                    hasOutput = true
+                                    outputPath = outputFile.absolutePath
+                                    Toast.makeText(context, "Nối file thành công!", Toast.LENGTH_SHORT).show()
+                                }
+                                is MediaEngine.ExecutionState.Error -> {
+                                    progressMsg = "Lỗi: ${state.returnCode}"
+                                    isProcessing = false
+                                    Toast.makeText(context, "Lỗi xảy ra trong FFmpeg", Toast.LENGTH_LONG).show()
+                                }
+                            }
                         }
-                        is MediaEngine.ExecutionState.Progress -> {
-                            progressMsg = "Đang xử lý: ${state.timeInMilliseconds} ms"
-                        }
-                        is MediaEngine.ExecutionState.Success -> {
-                            progressMsg = "Nối thành công!"
-                            isProcessing = false
-                            hasOutput = true
-                            outputPath = outputFile.absolutePath
-                            Toast.makeText(context, "Nối file thành công!", Toast.LENGTH_SHORT).show()
-                        }
-                        is MediaEngine.ExecutionState.Error -> {
-                            progressMsg = "Lỗi: ${state.returnCode}"
-                            isProcessing = false
-                            Toast.makeText(context, "Lỗi trong quá trình nối file", Toast.LENGTH_LONG).show()
-                        }
+                    }
+                } catch(e: Throwable) {
+                    withContext(Dispatchers.Main) {
+                        progressMsg = "Ngoại lệ: ${e.message}"
+                        isProcessing = false
+                        Toast.makeText(context, "Lỗi Coroutine: ${e.message}", Toast.LENGTH_LONG).show()
                     }
                 }
             }
+        } catch(e: Throwable) {
+            Toast.makeText(context, "Lỗi khi bắt đầu: ${e.message}", Toast.LENGTH_LONG).show()
+            isProcessing = false
         }
     }
 

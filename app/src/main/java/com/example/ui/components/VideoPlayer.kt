@@ -30,20 +30,23 @@ fun VideoPlayer(
         }
     }
     
-    DisposableEffect(
-        AndroidView(
-            modifier = modifier
-                .fillMaxWidth()
-                .height(250.dp),
-            factory = { ctx ->
-                PlayerView(ctx).apply {
-                    player = exoPlayer
-                }
-            }
-        )
-    ) {
+    DisposableEffect(exoPlayer) {
         onDispose {
             exoPlayer.release()
         }
     }
+
+    AndroidView(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(250.dp),
+        factory = { ctx ->
+            PlayerView(ctx).apply {
+                player = exoPlayer
+            }
+        },
+        update = { playerView ->
+            playerView.player = exoPlayer
+        }
+    )
 }
