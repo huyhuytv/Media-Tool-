@@ -41,7 +41,7 @@ class MediaEngine(private val context: Context) {
                 { session ->
                     val returnCode = session.returnCode
                     if (ReturnCode.isSuccess(returnCode)) {
-                        trySend(ExecutionState.Success(session.logsAsString))
+                        trySend(ExecutionState.Success(session.logsAsString ?: ""))
                     } else if (ReturnCode.isCancel(returnCode)) {
                         trySend(ExecutionState.Error(returnCode, "Canceled by user"))
                     } else {
@@ -75,9 +75,24 @@ class MediaEngine(private val context: Context) {
      */
     fun getSafParameter(uri: Uri, mode: String = "r"): String? {
         return try {
-            FFmpegKitConfig.getSafParameterForRead(context, uri)
+            val safUrl = FFmpegKitConfig.getSafParameterForRead(context, uri)
+            android.util.Log.e("MediaEngine", "Got SAF: $safUrl for URI: $uri")
+            safUrl
         } catch (e: Throwable) {
-            null
+            android.util.Log.e("MediaEngine", "Error getting SAF param: ${e.message}, falling back to temp file", e)
+            try {
+                // Fallback: Copy to cache dir
+                val tempFile = java.io.File(context.cacheDir, "temp_media_${System.currentTimeMillis()}")
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    tempFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                tempFile.absolutePath
+            } catch (copyErr: Throwable) {
+                android.util.Log.e("MediaEngine", "Fallback copy failed: ${copyErr.message}", copyErr)
+                null
+            }
         }
     }
 }

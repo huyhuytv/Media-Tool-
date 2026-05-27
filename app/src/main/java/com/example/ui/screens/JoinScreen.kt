@@ -18,6 +18,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -78,43 +80,46 @@ fun JoinScreen(navController: NavController) {
                 return
             }
 
-            val safPaths = selectedUris.mapNotNull { mediaEngine.getSafParameter(it) }
-            if (safPaths.size != selectedUris.size) {
-                Toast.makeText(context, "Có lỗi khi đọc đường dẫn file gốc", Toast.LENGTH_SHORT).show()
-                return
-            }
-
             isProcessing = true
             progressMsg = "Đang chuẩn bị nối..."
             hasOutput = false
 
-            val outputDir = File(context.cacheDir, "join_outputs").apply { mkdirs() }
-            val ext = com.example.core.SettingsManager.getAudioFormatExt(context)
-            val outputFile = File(outputDir, "joined_audio_${System.currentTimeMillis()}.$ext")
-
-            val inputs = safPaths.joinToString(" ") { "-i \"$it\"" }
-            val filter = StringBuilder()
-            for (i in safPaths.indices) {
-                filter.append("[$i:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a$i];")
-            }
-            for (i in safPaths.indices) {
-                filter.append("[a$i]")
-            }
-            filter.append("concat=n=${safPaths.size}:v=0:a=1[outa]")
-
-            val acodec = com.example.core.SettingsManager.getAudioCodecArg(context)
-            val isLosslessSetting = com.example.core.SettingsManager.isAudioLossless(context)
-            
-            val abitrate = if (acodec.contains("flac") || acodec.contains("pcm")) {
-                "" 
-            } else {
-                if (isLosslessSetting) "-b:a ${com.example.core.SettingsManager.getAudioBitrateInt(context)/1000}k" else com.example.core.SettingsManager.getAudioBitrateArg(context)
-            }
-
-            val command = "-y $inputs -filter_complex \"$filter\" -map \"[outa]\" $acodec $abitrate \"${outputFile.absolutePath}\""
-
-            coroutineScope.launch {
+            coroutineScope.launch(Dispatchers.IO) {
                 try {
+                    val safPaths = selectedUris.mapNotNull { mediaEngine.getSafParameter(it) }
+                    if (safPaths.size != selectedUris.size) {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "Có lỗi khi đọc đường dẫn file gốc", Toast.LENGTH_SHORT).show()
+                            isProcessing = false
+                        }
+                        return@launch
+                    }
+
+                    val outputDir = File(context.cacheDir, "join_outputs").apply { mkdirs() }
+                    val ext = com.example.core.SettingsManager.getAudioFormatExt(context)
+                    val outputFile = File(outputDir, "joined_audio_${System.currentTimeMillis()}.$ext")
+
+                    val inputs = safPaths.joinToString(" ") { "-i \"$it\"" }
+                    val filter = StringBuilder()
+                    for (i in safPaths.indices) {
+                        filter.append("[$i:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a$i];")
+                    }
+                    for (i in safPaths.indices) {
+                        filter.append("[a$i]")
+                    }
+                    filter.append("concat=n=${safPaths.size}:v=0:a=1[outa]")
+        
+                    val acodec = com.example.core.SettingsManager.getAudioCodecArg(context)
+                    val isLosslessSetting = com.example.core.SettingsManager.isAudioLossless(context)
+                    
+                    val abitrate = if (acodec.contains("flac") || acodec.contains("pcm")) {
+                        "" 
+                    } else {
+                        if (isLosslessSetting) "-b:a ${com.example.core.SettingsManager.getAudioBitrateInt(context)/1000}k" else com.example.core.SettingsManager.getAudioBitrateArg(context)
+                    }
+        
+                    val command = "-y $inputs -filter_complex \"$filter\" -map \"[outa]\" $acodec $abitrate \"${outputFile.absolutePath}\""
+
                     mediaEngine.executeFFmpegCommand(command).collect { state ->
                         withContext(Dispatchers.Main) {
                             when (state) {
@@ -221,7 +226,13 @@ fun JoinScreen(navController: NavController) {
             }
 
             if (isProcessing || progressMsg.isNotEmpty()) {
-                Text(text = progressMsg, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                Text(
+                    text = progressMsg, 
+                    modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite }, 
+                    textAlign = TextAlign.Center, 
+                    fontWeight = FontWeight.Bold, 
+                    color = MaterialTheme.colorScheme.primary
+                )
                 if (isProcessing) {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }

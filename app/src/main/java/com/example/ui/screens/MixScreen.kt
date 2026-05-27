@@ -191,7 +191,7 @@ fun MixScreen(navController: NavController) {
             progressMsg = "Đang chuẩn bị ghép..."
             hasOutput = false
             
-            coroutineScope.launch {
+            coroutineScope.launch(Dispatchers.IO) {
                 try {
                     val baseSaf = mediaEngine.getSafParameter(baseUri!!)
                     if (baseSaf == null) {
@@ -288,6 +288,8 @@ fun MixScreen(navController: NavController) {
                     val maps = if (isMixModeVideo) "-map 0:v? -map \"[outa]\"" else "-map \"[outa]\""
                     
                     val command = "-y $inputArgs -filter_complex \"$filter\" $maps $vcodec $acodec $abitrate \"${outputFile.absolutePath}\""
+                    
+                    android.util.Log.e("MixScreen", "Executing Mix Command: $command")
                     
                     mediaEngine.executeFFmpegCommand(command).collect { state ->
                         withContext(Dispatchers.Main) {
