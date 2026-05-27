@@ -99,6 +99,7 @@ dependencies {
   implementation(libs.converter.moshi)
   // implementation(libs.firebase.ai)
   implementation(files("libs/ffmpeg-kit-full-6.0-2.LTS.aar"))
+  implementation(libs.smart.exception.java)
   implementation(libs.androidx.media3.exoplayer)
   implementation(libs.androidx.media3.ui)
   implementation(libs.androidx.media3.transformer)
