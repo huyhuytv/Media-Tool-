@@ -145,10 +145,11 @@ fun JoinScreen(navController: NavController) {
                         }
                     }
                 } catch(e: Throwable) {
+                    val causeStr = generateSequence(e) { it.cause }.joinToString(" -> ") { it.toString() }
                     withContext(Dispatchers.Main) {
-                        progressMsg = "Ngoại lệ: ${e.message}"
+                        progressMsg = "Ngoại lệ: $causeStr"
                         isProcessing = false
-                        Toast.makeText(context, "Lỗi Coroutine: ${e.message}", Toast.LENGTH_LONG).show()
+                        Toast.makeText(context, "Lỗi Coroutine: $causeStr", Toast.LENGTH_LONG).show()
                     }
                 }
             }

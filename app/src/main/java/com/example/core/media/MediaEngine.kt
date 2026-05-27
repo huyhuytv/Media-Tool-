@@ -64,7 +64,8 @@ class MediaEngine(private val context: Context) {
                 FFmpegKit.cancel(session.sessionId)
             }
         } catch (e: Throwable) {
-            trySend(ExecutionState.Error(null, "Native Error: ${e.message}"))
+            val causeStr = generateSequence(e) { it.cause }.joinToString(" -> ") { it.toString() }
+            trySend(ExecutionState.Error(null, "Native Error: $causeStr"))
             close(e)
         }
     }
@@ -75,11 +76,18 @@ class MediaEngine(private val context: Context) {
      */
     fun getSafParameter(uri: Uri, mode: String = "r"): String? {
         return try {
+            // Force load
+            try {
+                com.arthenica.ffmpegkit.FFmpegKit.executeAsync("ffmpeg -version", { _ -> }, { _ -> }, { _ -> })
+            } catch(th: Throwable) {
+                // Ignore
+            }
             val safUrl = FFmpegKitConfig.getSafParameterForRead(context, uri)
             android.util.Log.e("MediaEngine", "Got SAF: $safUrl for URI: $uri")
             safUrl
         } catch (e: Throwable) {
-            android.util.Log.e("MediaEngine", "Error getting SAF param: ${e.message}, falling back to temp file", e)
+            val causeStr = generateSequence(e) { it.cause }.joinToString(" -> ") { it.toString() }
+            android.util.Log.e("MediaEngine", "Error getting SAF param: $causeStr", e)
             try {
                 // Fallback: Copy to cache dir
                 val tempFile = java.io.File(context.cacheDir, "temp_media_${System.currentTimeMillis()}")
