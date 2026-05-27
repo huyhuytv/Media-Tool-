@@ -9,6 +9,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -18,8 +19,14 @@ import androidx.navigation.NavController
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(navController: NavController) {
+    val context = LocalContext.current
     var tabIndex by remember { mutableStateOf(0) }
     var useDefaultConfig by remember { mutableStateOf(true) }
+
+    // State loaded from persistency
+    var vidIndex by remember { mutableStateOf(com.example.core.SettingsManager.getVidQualityIndex(context)) }
+    var audIndex by remember { mutableStateOf(com.example.core.SettingsManager.getAudBitrateIndex(context)) }
+    var fmtIndex by remember { mutableStateOf(com.example.core.SettingsManager.getAudFormatIndex(context)) }
 
     Scaffold(
         topBar = {
@@ -59,12 +66,11 @@ fun SettingsScreen(navController: NavController) {
                         Text("Chất lượng Video đầu ra:", color = Color(0xFF00A0FF), fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
                         
                         var expandedVid by remember { mutableStateOf(false) }
-                        var vidIndex by remember { mutableStateOf(1) }
-                        val vidList = listOf("1 Mbps (Nhẹ, chất lượng thấp)", "2.5 Mbps (Mặc định, cân bằng)", "5 Mbps (Nét, file nặng)", "8 Mbps (Rất nét)")
+                        val vidList = listOf("2 Mbps (Nhẹ, tiết kiệm)", "5 Mbps (Mặc định, chuẩn đẹp)", "10 Mbps (Chất lượng cao)", "20 Mbps (Rất nét, File lớn)", "50 Mbps (Studio/4K, File siêu lớn)")
                         
                         ExposedDropdownMenuBox(expanded = expandedVid, onExpandedChange = { expandedVid = it }, modifier = Modifier.fillMaxWidth()) {
                             OutlinedTextField(
-                                value = vidList[vidIndex],
+                                value = vidList.getOrNull(vidIndex) ?: vidList[1],
                                 onValueChange = {},
                                 readOnly = true,
                                 trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedVid) },
@@ -79,12 +85,11 @@ fun SettingsScreen(navController: NavController) {
 
                         Text("Chất lượng Âm thanh (Audio Bitrate):", color = Color(0xFF00AA00), fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp))
                         var expandedAud by remember { mutableStateOf(false) }
-                        var audIndex by remember { mutableStateOf(2) }
-                        val audList = listOf("64k (Nhanh, nhẹ)", "96k (Khá)", "128k (Mặc định, cân bằng)", "192k (Chất lượng cao)", "256k (Rất cao)")
+                        val audList = listOf("128k (Cơ bản)", "192k (Khá)", "256k (Chất lượng cao)", "320k (Studio/Chuyên nghiệp)", "Giữ nguyên bản gốc / Lossless")
                         
                         ExposedDropdownMenuBox(expanded = expandedAud, onExpandedChange = { expandedAud = it }, modifier = Modifier.fillMaxWidth()) {
                             OutlinedTextField(
-                                value = audList[audIndex],
+                                value = audList.getOrNull(audIndex) ?: audList[3],
                                 onValueChange = {},
                                 readOnly = true,
                                 trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedAud) },
@@ -99,12 +104,11 @@ fun SettingsScreen(navController: NavController) {
 
                         Text("Định dạng xuất âm thanh (Khi trích xuất/Audio):", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp))
                         var expandedFmt by remember { mutableStateOf(false) }
-                        var fmtIndex by remember { mutableStateOf(0) }
-                        val fmtList = listOf("Xuất M4A (Mặc định, nhẹ)", "Xuất WAV (Chất lượng cao)", "Xuất MP3 (Giả lập đuôi)")
+                        val fmtList = listOf("AAC (.m4a) - Mặc định, tốt", "MP3 (.mp3) - Phổ thông", "WAV (.wav) - Không nén, file rất lớn", "FLAC (.flac) - Không nén Lossless")
                         
                         ExposedDropdownMenuBox(expanded = expandedFmt, onExpandedChange = { expandedFmt = it }, modifier = Modifier.fillMaxWidth()) {
                             OutlinedTextField(
-                                value = fmtList[fmtIndex],
+                                value = fmtList.getOrNull(fmtIndex) ?: fmtList[0],
                                 onValueChange = {},
                                 readOnly = true,
                                 trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedFmt) },
@@ -159,7 +163,12 @@ fun SettingsScreen(navController: NavController) {
             }
 
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { }, modifier = Modifier.fillMaxWidth()) {
+                Button(onClick = { 
+                    com.example.core.SettingsManager.setVidQualityIndex(context, vidIndex)
+                    com.example.core.SettingsManager.setAudBitrateIndex(context, audIndex)
+                    com.example.core.SettingsManager.setAudFormatIndex(context, fmtIndex)
+                    navController.popBackStack()
+                }, modifier = Modifier.fillMaxWidth()) {
                     Text("LƯU CÀI ĐẶT & THOÁT")
                 }
                 TextButton(onClick = { navController.popBackStack() }, modifier = Modifier.fillMaxWidth()) {

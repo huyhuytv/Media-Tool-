@@ -8,7 +8,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -43,104 +42,81 @@ fun MainScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(bottom = 24.dp)
-                    .semantics { 
-                        heading()
-                        contentDescription = "Tiêu đề màn hình: Công cụ xử lý media, audio và video"
-                    }
             )
 
-            AccessibleButton(
-                text = "🎙 GHI ÂM TRỰC TIẾP",
-                contentDesc = "Mở mục ghi âm trực tiếp",
+            Button(
                 onClick = onNavigateToRecord,
+                modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(contentColor = Color(0xFFFF0000))
-            )
+            ) {
+                Text("🎙 GHI ÂM TRỰC TIẾP")
+            }
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            AccessibleButton(
-                text = "✂ CẮT ĐA ĐOẠN",
-                contentDesc = "Mở công cụ cắt audio hoặc video nhiều đoạn",
-                onClick = onNavigateToTrim
-            )
+            Button(
+                onClick = onNavigateToTrim,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("✂ CẮT ĐA ĐOẠN")
+            }
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            AccessibleButton(
-                text = "🔗 NỐI NHIỀU FILE",
-                contentDesc = "Mở công cụ nối nhiều tệp lại với nhau",
-                onClick = onNavigateToJoin
-            )
+            Button(
+                onClick = onNavigateToJoin,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("🔗 NỐI NHIỀU FILE")
+            }
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            AccessibleButton(
-                text = "🎵 GHÉP NHẠC & TỰ ĐỘNG GIẢM NỀN",
-                contentDesc = "Mở công cụ ghép nhạc và tự động giảm âm lượng nền",
+            Button(
                 onClick = onNavigateToMix,
+                modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(contentColor = Color(0xFFDD0000))
-            )
+            ) {
+                Text("🎵 GHÉP NHẠC & TỰ ĐỘNG GIẢM NỀN")
+            }
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            AccessibleButton(
-                text = "⚙ TÍNH NĂNG KHÁC (HIỆU ỨNG/TRÍCH XUẤT)",
-                contentDesc = "Mở danh sách các tính năng khác như thêm hiệu ứng hoặc trích xuất",
-                onClick = onNavigateToOther
-            )
+            Button(
+                onClick = onNavigateToOther,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("⚙ TÍNH NĂNG KHÁC (HIỆU ỨNG/TRÍCH XUẤT)")
+            }
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            AccessibleButton(
-                text = "🖼 GHÉP ẢNH VÀO ÂM THANH",
-                contentDesc = "Mở công cụ ghép hình ảnh vào mốc thời gian của âm thanh để tạo video",
+            Button(
                 onClick = onNavigateToImg2Vid,
+                modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(contentColor = Color(0xFF00AA00))
-            )
+            ) {
+                Text("🖼 GHÉP ẢNH VÀO ÂM THANH")
+            }
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            AccessibleButton(
-                text = "📝 ĐỌC & TRÍCH XUẤT PHỤ ĐỀ",
-                contentDesc = "Mở công cụ hỗ trợ đọc và trích xuất phụ đề",
+            Button(
                 onClick = onNavigateToSub,
+                modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(contentColor = Color(0xFF8800FF))
-            )
+            ) {
+                Text("📝 ĐỌC & TRÍCH XUẤT PHỤ ĐỀ")
+            }
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            AccessibleButton(
-                text = "🛠 CÀI ĐẶT CHUNG",
-                contentDesc = "Mở cấu hình cài đặt chung của ứng dụng",
-                onClick = onNavigateToSettings
-            )
-        }
-    }
-}
-
-@Composable
-fun AccessibleButton(
-    text: String,
-    contentDesc: String,
-    onClick: () -> Unit,
-    colors: ButtonColors = ButtonDefaults.buttonColors(),
-    modifier: Modifier = Modifier
-) {
-    Button(
-        onClick = onClick,
-        colors = colors,
-        modifier = modifier
-            .fillMaxWidth()
-            .defaultMinSize(minHeight = 56.dp) // Minimum touch target size for accessibility
-            .semantics(mergeDescendants = true) {
-                contentDescription = contentDesc
-                role = Role.Button
+            Button(
+                onClick = onNavigateToSettings,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("🛠 CÀI ĐẶT CHUNG")
             }
-    ) {
-        // Clear semantics so TalkBack won't read the raw text with weird emojis
-        Text(
-            text = text, 
-            modifier = Modifier.clearAndSetSemantics { }
-        )
+        }
     }
 }

@@ -1,16 +1,22 @@
 package com.example.ui.screens
 
+import android.net.Uri
+import android.provider.OpenableColumns
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -18,12 +24,159 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
+import androidx.media3.exoplayer.ExoPlayer
+import com.example.core.media.MediaEngine
+import com.example.ui.components.VideoPlayer
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TrimScreen(navController: NavController) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    val mediaEngine = remember { MediaEngine(context) }
+    
+    var selectedUri by remember { mutableStateOf<Uri?>(null) }
+    var fileName by remember { mutableStateOf("Chưa chọn") }
+    var exoPlayer by remember { mutableStateOf<ExoPlayer?>(null) }
+    
+    var startMs by remember { mutableStateOf("0") }
+    var endMs by remember { mutableStateOf("0") }
+    
+    var isProcessing by remember { mutableStateOf(false) }
+    var progressMsg by remember { mutableStateOf("") }
     var hasOutput by remember { mutableStateOf(false) }
-    var bookmarksVisible by remember { mutableStateOf(false) } // Represents "visibility" of the spinner
+    var outputPath by remember { mutableStateOf("") }
+    
+    val saveLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { destUri ->
+        destUri?.let { uri ->
+            if (outputPath.isNotEmpty()) {
+                coroutineScope.launch(Dispatchers.IO) {
+                    try {
+                        val inFile = File(outputPath)
+                        context.contentResolver.openOutputStream(uri)?.use { outStream ->
+                            inFile.inputStream().use { inStream ->
+                                inStream.copyTo(outStream)
+                            }
+                        }
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "Đã lưu file thành công!", Toast.LENGTH_LONG).show()
+                        }
+                    } catch (e: Exception) {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "Lỗi khi lưu file: ${e.message}", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        uri?.let {
+            selectedUri = it
+            fileName = getFileName(context, it) ?: "Unknown"
+        }
+    }
+    
+    fun getSeconds(msString: String): Double {
+        return msString.toLongOrNull()?.let { it / 1000.0 } ?: 0.0
+    }
+
+    fun startTrim() {
+        val uri = selectedUri
+        if (uri == null) {
+            Toast.makeText(context, "Vui lòng chọn file", Toast.LENGTH_SHORT).show()
+            return
+        }
+        
+        val startSec = getSeconds(startMs)
+        val endSec = getSeconds(endMs)
+        
+        if (endSec <= startSec && endSec > 0) {
+            Toast.makeText(context, "Mốc kết thúc phải lớn hơn bắt đầu", Toast.LENGTH_SHORT).show()
+            return
+        }
+        
+        val safPath = mediaEngine.getSafParameter(uri)
+        if (safPath == null) {
+            Toast.makeText(context, "Không thể đọc file", Toast.LENGTH_SHORT).show()
+            return
+        }
+        
+        val outputDir = File(context.cacheDir, "trim_outputs").apply { mkdirs() }
+        val isAudio = fileName.endsWith(".mp3", true) || fileName.endsWith(".m4a", true) || 
+                      fileName.endsWith(".wav", true) || fileName.endsWith(".flac", true) || 
+                      fileName.endsWith(".ogg", true) || fileName.endsWith(".aac", true)
+        
+        val ext = if (isAudio) {
+            if (com.example.core.SettingsManager.isAudioLossless(context)) {
+                if (fileName.contains(".")) fileName.substringAfterLast(".") else "m4a"
+            } else {
+                com.example.core.SettingsManager.getAudioFormatExt(context)
+            }
+        } else {
+            if (fileName.contains(".")) fileName.substringAfterLast(".") else "mp4"
+        }
+        val outputFile = File(outputDir, "trimmed_${System.currentTimeMillis()}.$ext")
+        
+        val duration = if (endSec > 0) endSec - startSec else 0.0
+        val durationArg = if (duration > 0) "-t $duration" else ""
+                      
+        // Với audio, render lại hoàn thiện chuẩn từ Settings.
+        val codecArg = if (isAudio) {
+            if (com.example.core.SettingsManager.isAudioLossless(context)) {
+                "-c copy" // Cắt copy cho audio nếu chọn lossless (Tốc độ siêu nhanh, giữ nguyên chất lượng gốc)
+            } else {
+                val acodec = com.example.core.SettingsManager.getAudioCodecArg(context)
+                val abitrate = com.example.core.SettingsManager.getAudioBitrateArg(context)
+                // Flac/Wav không cấu hình bitrate vì đã xuất không nén (lossless by nature)
+                if (acodec.contains("flac") || acodec.contains("pcm")) {
+                    acodec
+                } else {
+                    "$acodec $abitrate"
+                }
+            }
+        } else {
+            "-c copy" // Video tạm thời giữ nguyên
+        }
+        
+        val command = "-y -ss $startSec -i \"$safPath\" $durationArg $codecArg \"${outputFile.absolutePath}\""
+        
+        isProcessing = true
+        progressMsg = "Đang xử lý..."
+        hasOutput = false
+        
+        coroutineScope.launch {
+            mediaEngine.executeFFmpegCommand(command).collect { state ->
+                withContext(Dispatchers.Main) {
+                    when (state) {
+                        is MediaEngine.ExecutionState.Connecting -> {
+                            progressMsg = "Đang kết nối..."
+                        }
+                        is MediaEngine.ExecutionState.Progress -> {
+                            progressMsg = "Đang cắt: ${state.timeInMilliseconds}ms"
+                        }
+                        is MediaEngine.ExecutionState.Success -> {
+                            progressMsg = "Cắt thành công!"
+                            isProcessing = false
+                            hasOutput = true
+                            outputPath = outputFile.absolutePath
+                            Toast.makeText(context, "Cắt thành công!", Toast.LENGTH_SHORT).show()
+                        }
+                        is MediaEngine.ExecutionState.Error -> {
+                            progressMsg = "Lỗi: ${state.returnCode}"
+                            isProcessing = false
+                            Toast.makeText(context, "Lỗi cắt file", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -41,216 +194,71 @@ fun TrimScreen(navController: NavController) {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // Hàng nút chức năng chính
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = { },
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(contentColor = Color(0xFF00A0FF))
-                ) {
-                    Text("Chế độ: CẮT AUDIO", textAlign = TextAlign.Center)
-                }
-                Button(
-                    onClick = { },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text("Chất lượng: Cao", textAlign = TextAlign.Center)
-                }
-            }
-
-            Button(onClick = { }, modifier = Modifier.fillMaxWidth()) {
+            Button(onClick = { launcher.launch("*/*") }, modifier = Modifier.fillMaxWidth()) {
                 Text("Chọn file cần cắt")
             }
 
-            Text(text = "File: Chưa chọn", modifier = Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(text = "File: $fileName", modifier = Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.onSurfaceVariant)
 
-            // Điều khiển phát
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { }, modifier = Modifier.weight(1f)) {
-                    Text("Phát file gốc")
-                }
-                Button(onClick = { }, modifier = Modifier.weight(1f)) {
-                    Text("Xem thông tin file")
-                }
+            if (selectedUri != null) {
+                VideoPlayer(
+                    uri = selectedUri!!,
+                    onPlayerReady = { player -> exoPlayer = player }
+                )
             }
 
-            // Thanh thời gian và vị trí hiện tại
-            Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Text(text = "Vị trí hiện tại: 00:00", style = MaterialTheme.typography.bodyMedium)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(text = "Thời gian: 00:00 / 00:00", style = MaterialTheme.typography.bodyMedium)
-                    Slider(value = 0f, onValueChange = {}, modifier = Modifier.fillMaxWidth())
-                    Button(onClick = { }, modifier = Modifier.fillMaxWidth()) {
-                        Text("Lấy mốc thời gian hiện tại")
-                    }
-                }
-            }
-
-            // Nhập mốc bắt đầu / kết thúc
             Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(text = "Mốc bắt đầu (ms, ví dụ: 5000, 10000, 15000)")
+                    Text(text = "Mốc bắt đầu (ms)")
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         OutlinedTextField(
-                            value = "",
-                            onValueChange = {},
-                            modifier = Modifier.weight(1f),
-                            placeholder = { Text("Nhập mốc bắt đầu") },
+                            value = startMs,
+                            onValueChange = { startMs = it.filter { char -> char.isDigit() } },
+                            modifier = Modifier.weight(1f).semantics { contentDescription = "Ô nhập mốc thời gian bắt đầu tính bằng mili giây" },
+                            label = { Text("Bắt đầu") },
+                            placeholder = { Text("0") },
                             singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Next)
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next)
                         )
-                        Button(onClick = { }) {
-                            Text("Lấy mốc bắt đầu hiện tại")
+                        Button(onClick = { 
+                            exoPlayer?.let { player -> startMs = player.currentPosition.toString() }
+                        }, modifier = Modifier.semantics { contentDescription = "Lấy mốc thời gian bắt đầu đang phát trên trình phát video" }) {
+                            Text("Lấy mốc hiện tại")
                         }
                     }
 
-                    Text(text = "Mốc kết thúc (ms, ví dụ: 10000, 20000, 25000)")
+                    Text(text = "Mốc kết thúc (ms, để 0 lấy đến hết)")
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         OutlinedTextField(
-                            value = "",
-                            onValueChange = {},
-                            modifier = Modifier.weight(1f),
-                            placeholder = { Text("Nhập mốc kết thúc") },
+                            value = endMs,
+                            onValueChange = { endMs = it.filter { char -> char.isDigit() } },
+                            modifier = Modifier.weight(1f).semantics { contentDescription = "Ô nhập mốc thời gian kết thúc tính bằng mili giây, nhập 0 để cắt đến hết" },
+                            label = { Text("Kết thúc") },
+                            placeholder = { Text("0") },
                             singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Done)
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done)
                         )
-                        Button(onClick = { }) {
-                            Text("Lấy mốc kết thúc hiện tại")
+                        Button(onClick = {
+                            exoPlayer?.let { player -> endMs = player.currentPosition.toString() }
+                        }, modifier = Modifier.semantics { contentDescription = "Lấy mốc thời gian kết thúc đang phát trên trình phát video" }) {
+                            Text("Lấy mốc hiện tại")
                         }
                     }
                 }
-            }
-
-            // Nút hoàn tác và làm lại
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { }, modifier = Modifier.weight(1f)) {
-                    Text("Hoàn tác")
-                }
-                OutlinedButton(onClick = { }, modifier = Modifier.weight(1f)) {
-                    Text("Làm lại")
-                }
-            }
-
-            // CÁC TÍNH NĂNG CẮT TRỰC TIẾP MỚI
-            Text(
-                text = "CẮT TRỰC TIẾP",
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                color = Color(0xFF00A0FF),
-                fontSize = 14.sp,
-                fontWeight = FontWeight.SemiBold
-            )
-
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = { },
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2196F3))
-                ) {
-                    Text("Chọn thời gian cắt trực tiếp", textAlign = TextAlign.Center)
-                }
-                Button(
-                    onClick = { },
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50))
-                ) {
-                    Text("Mốc thời gian có sẵn", textAlign = TextAlign.Center)
-                }
-            }
-
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilledTonalButton(onClick = { }, modifier = Modifier.weight(1f)) {
-                    Text("Chia thành đoạn nhỏ", textAlign = TextAlign.Center)
-                }
-                FilledTonalButton(onClick = { }, modifier = Modifier.weight(1f)) {
-                    Text("Cắt đoạn cách đều", textAlign = TextAlign.Center)
-                }
-            }
-
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilledTonalButton(onClick = { }, modifier = Modifier.weight(1f)) {
-                    Text("Cắt theo phần trăm", textAlign = TextAlign.Center)
-                }
-                FilledTonalButton(onClick = { }, modifier = Modifier.weight(1f)) {
-                    Text("Cắt bỏ đầu cuối", textAlign = TextAlign.Center)
-                }
-            }
-
-            // Bookmark
-            Text(
-                text = "BOOKMARK - Đánh dấu vị trí quan trọng",
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                color = Color(0xFFFF6600),
-                fontSize = 14.sp,
-                fontWeight = FontWeight.SemiBold
-            )
-
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { }, modifier = Modifier.weight(1f)) {
-                    Text("Thêm bookmark tại vị trí hiện tại", textAlign = TextAlign.Center)
-                }
-                Button(onClick = { }, modifier = Modifier.weight(1f)) {
-                    Text("Quản lý bookmark", textAlign = TextAlign.Center)
-                }
-            }
-
-            if (bookmarksVisible) {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    var expanded by remember { mutableStateOf(false) }
-                    ExposedDropdownMenuBox(
-                        expanded = expanded,
-                        onExpandedChange = { expanded = !expanded },
-                        modifier = Modifier.weight(2f)
-                    ) {
-                        OutlinedTextField(
-                            value = "-- Chọn bookmark để di chuyển đến --",
-                            onValueChange = {},
-                            readOnly = true,
-                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                            modifier = Modifier.menuAnchor().fillMaxWidth(),
-                            singleLine = true
-                        )
-                        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                            DropdownMenuItem(text = { Text("-- Chọn bookmark để di chuyển đến --") }, onClick = { expanded = false })
-                        }
-                    }
-                    Button(onClick = { }, modifier = Modifier.weight(1f)) {
-                        Text("Di chuyển đến")
-                    }
-                }
-            }
-
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { }, modifier = Modifier.weight(1f)) {
-                    Text("Lấy bookmark làm mốc bắt đầu", textAlign = TextAlign.Center)
-                }
-                OutlinedButton(onClick = { }, modifier = Modifier.weight(1f)) {
-                    Text("Lấy bookmark làm mốc kết thúc", textAlign = TextAlign.Center)
-                }
-            }
-
-            Button(onClick = { }, modifier = Modifier.fillMaxWidth()) {
-                Text("Tự động cắt theo các bookmark")
-            }
-
-            // Hiệu ứng
-            Button(onClick = { }, modifier = Modifier.fillMaxWidth()) {
-                Text("Hiệu ứng Fade (mờ dần đầu/cuối)")
             }
 
             Divider(modifier = Modifier.padding(vertical = 8.dp))
 
-            // Trạng thái và tiến trình
-            Text(text = "Sẵn sàng", modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center, fontWeight = FontWeight.Bold)
-            LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), progress = 0f)
-
-            // Nút xử lý chính
-            Button(onClick = { }, modifier = Modifier.fillMaxWidth()) {
-                Text("Nghe thử các đoạn sẽ cắt")
+            if (isProcessing || progressMsg.isNotEmpty()) {
+                Text(text = progressMsg, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                if (isProcessing) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
             }
 
             Button(
-                onClick = { hasOutput = true },
+                onClick = { startTrim() },
+                enabled = !isProcessing && selectedUri != null,
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.errorContainer, contentColor = MaterialTheme.colorScheme.onErrorContainer)
             ) {
@@ -258,16 +266,21 @@ fun TrimScreen(navController: NavController) {
             }
 
             if (hasOutput) {
-                Button(onClick = { }, modifier = Modifier.fillMaxWidth()) {
-                    Text("Lưu file đã cắt")
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("Đã cắt xong! File lưu tạm tại:\n$outputPath", style = MaterialTheme.typography.bodySmall)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Button(onClick = { 
+                            val ext = if (outputPath.contains(".")) outputPath.substringAfterLast(".") else "mp4"
+                            saveLauncher.launch("trimmed_${System.currentTimeMillis()}.$ext")
+                        }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Lưu file vào thiết bị")
+                        }
+                    }
                 }
-                Button(onClick = { }, modifier = Modifier.fillMaxWidth()) {
-                    Text("Xuất sang định dạng khác")
-                }
-            }
-
-            OutlinedButton(onClick = { hasOutput = false }, modifier = Modifier.fillMaxWidth()) {
-                Text("Xóa file hiện tại")
             }
 
             TextButton(onClick = { navController.popBackStack() }, modifier = Modifier.fillMaxWidth()) {
@@ -277,3 +290,27 @@ fun TrimScreen(navController: NavController) {
     }
 }
 
+fun getFileName(context: android.content.Context, uri: Uri): String? {
+    var result: String? = null
+    if (uri.scheme == "content") {
+        val cursor = context.contentResolver.query(uri, null, null, null, null)
+        try {
+            if (cursor != null && cursor.moveToFirst()) {
+                val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (index != -1) {
+                    result = cursor.getString(index)
+                }
+            }
+        } finally {
+            cursor?.close()
+        }
+    }
+    if (result == null) {
+        result = uri.path
+        val cut = result?.lastIndexOf('/') ?: -1
+        if (cut != -1) {
+            result = result?.substring(cut + 1)
+        }
+    }
+    return result
+}
