@@ -33,6 +33,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.math.roundToInt
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.semantics.Role
+import com.example.ui.components.AccessibleCheckboxRow
+import com.example.ui.components.AccessibleSliderColumn
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -201,7 +205,7 @@ fun OtherScreen(navController: NavController) {
                 if (!isVideoMode) {
                     ext = if (modeIndex == 1) { 
                         when (extIndex) { 0 -> "m4a"; 1 -> "wav"; else -> "mp3" }
-                    } else "mp3"
+                    } else com.example.core.SettingsManager.getAudioFormatExt(context)
                 } else {
                     if (modeIndex == 1) ext = when (extIndex) { 0 -> "m4a"; 1 -> "wav"; else -> "mp3" }
                 }
@@ -354,26 +358,48 @@ fun OtherScreen(navController: NavController) {
                     cmd.append("-af \"${aFilters.joinToString(",")}\" ")
                 }
                 
-                val isWav = ext == "wav"
-                val globalAudioBitrate = com.example.core.SettingsManager.getAudioBitrateArg(context)
+                var globalAudioBitrate = com.example.core.SettingsManager.getAudioBitrateArg(context)
+                val codecArg = when (ext) {
+                    "m4a" -> "-c:a aac"
+                    "mp3" -> "-c:a libmp3lame"
+                    "wav" -> "-c:a pcm_s16le"
+                    "flac" -> "-c:a flac"
+                    else -> "-c:a aac"
+                }
+                
+                // Tránh lỗi -c:a copy khi dùng filter hoặc khi format conversion
+                if ((aFilters.isNotEmpty() || channelModeIndex > 0 || (isVideoMode && modeIndex == 1) || (!isVideoMode && modeIndex == 1) || codecArg != "-c:a aac") && globalAudioBitrate.contains("-c:a copy")) {
+                    globalAudioBitrate = "-b:a 320k" // fallback an toàn để cho phép encode lại
+                }
+
                 if (isVideoMode) {
                     when (modeIndex) {
                         0 -> {
                             cmd.append("-c:v copy ")
-                            if (aFilters.isNotEmpty() || channelModeIndex > 0) {
+                            if (aFilters.isNotEmpty() || channelModeIndex > 0 || !globalAudioBitrate.contains("-c:a copy")) {
                                 cmd.append("-c:a aac $globalAudioBitrate ")
+                            } else {
+                                cmd.append("-c:a copy ")
                             }
                         }
-                        1 -> cmd.append(if (isWav) "-vn -c:a pcm_s16le " else "-vn $globalAudioBitrate ")
+                        1 -> {
+                            cmd.append("-vn $codecArg ")
+                            if (!codecArg.contains("pcm_s16le") && !codecArg.contains("flac")) cmd.append("$globalAudioBitrate ")
+                        }
                         2 -> cmd.append("-an -c:v copy ")
                         4 -> { // Nén Video
-                            val res = when(resIndex) { 1 -> "-vf scale=-2:720 "; 2 -> "-vf scale=-2:480 "; else -> "" }
+                            val res = when(resIndex) { 
+                                1 -> "-vf scale=-2:720 "
+                                2 -> "-vf scale=-2:480 "
+                                else -> "-vf \"scale=trunc(iw/2)*2:trunc(ih/2)*2\" " 
+                            }
                             val crf = 51f - (compressQuality * 33f / 100f)
                             cmd.append("$res -c:v libx264 -crf $crf -preset veryfast -c:a aac $globalAudioBitrate ")
                         }
                     }
                 } else {
-                    cmd.append(if (isWav) "-vn -c:a pcm_s16le " else "-vn $globalAudioBitrate ")
+                    cmd.append("-vn $codecArg ")
+                    if (!codecArg.contains("pcm_s16le") && !codecArg.contains("flac")) cmd.append("$globalAudioBitrate ")
                 }
                 
                 cmd.append("\"${outputFile.absolutePath}\"")
@@ -507,7 +533,6 @@ fun OtherScreen(navController: NavController) {
             }
 
             if (isVideoMode && modeIndex == 4) {
-                Text("Độ phân giải đầu ra:")
                 val resList = listOf("Giữ nguyên độ phân giải", "Giảm xuống 720p", "Giảm xuống 480p")
                 var expandedRes by remember { mutableStateOf(false) }
                 ExposedDropdownMenuBox(
@@ -520,6 +545,7 @@ fun OtherScreen(navController: NavController) {
                         onValueChange = {},
                         readOnly = true,
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedRes) },
+                        label = { Text("Độ phân giải đầu ra") },
                         modifier = Modifier.menuAnchor().fillMaxWidth()
                     )
                     ExposedDropdownMenu(expanded = expandedRes, onDismissRequest = { expandedRes = false }) {
@@ -528,14 +554,24 @@ fun OtherScreen(navController: NavController) {
                         }
                     }
                 }
-                Text("Chất lượng nén: ${compressQuality.roundToInt()}%")
-                Slider(value = compressQuality, onValueChange = { compressQuality = it }, valueRange = 10f..100f, modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Thanh trượt Chọn chất lượng nén" })
+                AccessibleSliderColumn(
+                    label = "Chất lượng nén: ${compressQuality.roundToInt()}%",
+                    value = compressQuality,
+                    onValueChange = { compressQuality = it },
+                    valueRange = 10f..100f
+                )
             }
 
             // Effects section
             if ((!isVideoMode && modeIndex == 0) || (isVideoMode && (modeIndex == 0 || modeIndex == 1))) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(checked = enableTimeMocks, onCheckedChange = { enableTimeMocks = it }, modifier = Modifier.semantics { contentDescription = "Bật chế độ cài đặt thời gian cho từng hiệu ứng" })
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .toggleable(value = enableTimeMocks, onValueChange = { enableTimeMocks = it }, role = Role.Checkbox)
+                        .padding(vertical = 4.dp)
+                ) {
+                    Checkbox(checked = enableTimeMocks, onCheckedChange = null, modifier = Modifier.padding(end = 8.dp))
                     Text("⏱️ Bật chế độ cài đặt thời gian cho từng hiệu ứng", color = Color(0xFF00A0FF), fontSize = 14.sp)
                 }
 
@@ -552,24 +588,22 @@ fun OtherScreen(navController: NavController) {
 
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(checked = enableNorm, onCheckedChange = { enableNorm = it })
-                            Text("Bật chuẩn hóa âm lượng", fontWeight = FontWeight.SemiBold)
-                        }
+                        AccessibleCheckboxRow(checked = enableNorm, onCheckedChange = { enableNorm = it }, text = "Bật chuẩn hóa âm lượng")
                         if (enableNorm) {
                             TimeBlock(normStartMs, { normStartMs = it }, normEndMs, { normEndMs = it }, "chuẩn hóa âm lượng")
-                            Text("Peak mục tiêu: ${targetPeakPercent.roundToInt()}%")
-                            Slider(value = targetPeakPercent, onValueChange = { targetPeakPercent = it }, valueRange = 50f..99f, modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Thanh trượt Peak mục tiêu" })
+                            AccessibleSliderColumn(
+                                label = "Peak mục tiêu: ${targetPeakPercent.roundToInt()}%",
+                                value = targetPeakPercent,
+                                onValueChange = { targetPeakPercent = it },
+                                valueRange = 50f..99f
+                            )
                         }
                     }
                 }
 
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(checked = enableNg, onCheckedChange = { enableNg = it })
-                            Text("Bật Noise Gate (Cổng triệt ồn)", fontWeight = FontWeight.SemiBold)
-                        }
+                        AccessibleCheckboxRow(checked = enableNg, onCheckedChange = { enableNg = it }, text = "Bật Noise Gate (Cổng triệt ồn)")
                         if (enableNg) {
                             TimeBlock(ngStartMs, { ngStartMs = it }, ngEndMs, { ngEndMs = it }, "Noise Gate")
                             ExposedDropdownMenuBox(
@@ -597,112 +631,144 @@ fun OtherScreen(navController: NavController) {
 
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(checked = enableSpeedPitch, onCheckedChange = { enableSpeedPitch = it })
-                            Text("Bật Thay đổi Tốc độ & Độ cao", fontWeight = FontWeight.SemiBold)
-                        }
+                        AccessibleCheckboxRow(checked = enableSpeedPitch, onCheckedChange = { enableSpeedPitch = it }, text = "Bật Thay đổi Tốc độ & Độ cao")
                         if (enableSpeedPitch) {
                             if (!isVideoMode) {
-                                Text("Tốc độ (Speed): ${String.format("%.2f", speedFactor)}x")
-                                Slider(value = speedFactor, onValueChange = { speedFactor = it }, valueRange = 0.5f..2.0f, modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Thanh trượt Tốc độ" })
+                                AccessibleSliderColumn(
+                                    label = "Tốc độ (Speed): ${String.format("%.2f", speedFactor)}x",
+                                    value = speedFactor,
+                                    onValueChange = { speedFactor = it },
+                                    valueRange = 0.5f..2.0f
+                                )
                             }
-                            Text("Độ cao (Pitch): ${String.format("%.2f", pitchFactor)}x")
-                            Slider(value = pitchFactor, onValueChange = { pitchFactor = it }, valueRange = 0.5f..2.0f, modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Thanh trượt Độ cao Pitch" })
+                            AccessibleSliderColumn(
+                                label = "Độ cao (Pitch): ${String.format("%.2f", pitchFactor)}x",
+                                value = pitchFactor,
+                                onValueChange = { pitchFactor = it },
+                                valueRange = 0.5f..2.0f
+                            )
                         }
                     }
                 }
 
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(checked = enablePan, onCheckedChange = { enablePan = it })
-                            Text("Bật Pan tĩnh", fontWeight = FontWeight.SemiBold)
-                        }
+                        AccessibleCheckboxRow(checked = enablePan, onCheckedChange = { enablePan = it }, text = "Bật Pan tĩnh")
                         if (enablePan) {
                             TimeBlock(panStartMs, { panStartMs = it }, panEndMs, { panEndMs = it }, "Pan trái phải")
-                            Text("Pan: ${if (panVal < 50f) "Trái ${panVal.roundToInt()}" else if (panVal > 50f) "Phải ${panVal.roundToInt()}" else "Giữa"}")
-                            Slider(value = panVal, onValueChange = { panVal = it }, valueRange = 1f..100f, modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Thanh trượt Pan âm thanh trái phải" })
+                            AccessibleSliderColumn(
+                                label = "Pan: ${if (panVal < 50f) "Trái ${panVal.roundToInt()}" else if (panVal > 50f) "Phải ${panVal.roundToInt()}" else "Giữa"}",
+                                value = panVal,
+                                onValueChange = { panVal = it },
+                                valueRange = 1f..100f
+                            )
                         }
                     }
                 }
 
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(checked = enableAutoPan, onCheckedChange = { enableAutoPan = it })
-                            Text("Bật Auto Pan (Hiệu ứng đảo tai)", fontWeight = FontWeight.SemiBold)
-                        }
+                        AccessibleCheckboxRow(checked = enableAutoPan, onCheckedChange = { enableAutoPan = it }, text = "Bật Auto Pan (Hiệu ứng đảo tai)")
                         if (enableAutoPan) {
-                            Text("Chu kỳ Auto Pan: ${autoPanCycle.roundToInt()} ms")
-                            Slider(value = autoPanCycle, onValueChange = { autoPanCycle = it }, valueRange = 500f..10000f, modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Thanh trượt Chu kỳ Auto Pan" })
+                            AccessibleSliderColumn(
+                                label = "Chu kỳ Auto Pan: ${autoPanCycle.roundToInt()} ms",
+                                value = autoPanCycle,
+                                onValueChange = { autoPanCycle = it },
+                                valueRange = 500f..10000f
+                            )
                         }
                     }
                 }
 
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(checked = enableEcho, onCheckedChange = { enableEcho = it })
-                            Text("Bật tiếng vang (Echo)", fontWeight = FontWeight.SemiBold)
-                        }
+                        AccessibleCheckboxRow(checked = enableEcho, onCheckedChange = { enableEcho = it }, text = "Bật tiếng vang (Echo)")
                         if (enableEcho) {
-                            Text("Độ trễ vang: ${echoDelayMs.roundToInt()} ms")
-                            Slider(value = echoDelayMs, onValueChange = { echoDelayMs = it }, valueRange = 50f..2000f, modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Thanh trượt Độ trễ vang dội" })
-                            Text("Độ ngân dài: ${String.format("%.1f", echoDecay)}")
-                            Slider(value = echoDecay, onValueChange = { echoDecay = it }, valueRange = 0.1f..0.9f, modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Thanh trượt Độ ngân dài của vang" })
+                            AccessibleSliderColumn(
+                                label = "Độ trễ vang: ${echoDelayMs.roundToInt()} ms",
+                                value = echoDelayMs,
+                                onValueChange = { echoDelayMs = it },
+                                valueRange = 50f..2000f
+                            )
+                            AccessibleSliderColumn(
+                                label = "Độ ngân dài: ${String.format("%.1f", echoDecay)}",
+                                value = echoDecay,
+                                onValueChange = { echoDecay = it },
+                                valueRange = 0.1f..0.9f
+                            )
                         }
                     }
                 }
 
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(checked = enableReverb, onCheckedChange = { enableReverb = it })
-                            Text("Bật Reverb (Vang phòng thu)", fontWeight = FontWeight.SemiBold)
-                        }
+                        AccessibleCheckboxRow(checked = enableReverb, onCheckedChange = { enableReverb = it }, text = "Bật Reverb (Vang phòng thu)")
                         if (enableReverb) {
-                            Text("Kích thước phòng: ${(reverbRoomSize * 100).roundToInt()}%")
-                            Slider(value = reverbRoomSize, onValueChange = { reverbRoomSize = it }, valueRange = 0.1f..1.0f, modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Thanh trượt kích thước phòng ảo" })
-                            Text("Hấp thụ (Damping): ${(reverbDamping * 100).roundToInt()}%")
-                            Slider(value = reverbDamping, onValueChange = { reverbDamping = it }, valueRange = 0.0f..1.0f, modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Thanh trượt Độ hấp thụ âm thanh" })
-                            Text("Mức Reverb (Wet): ${(reverbWet * 100).roundToInt()}%")
-                            Slider(value = reverbWet, onValueChange = { reverbWet = it }, valueRange = 0.0f..0.8f, modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Thanh trượt Mức tác dụng của Vang" })
+                            AccessibleSliderColumn(
+                                label = "Kích thước phòng: ${(reverbRoomSize * 100).roundToInt()}%",
+                                value = reverbRoomSize,
+                                onValueChange = { reverbRoomSize = it },
+                                valueRange = 0.1f..1.0f
+                            )
+                            AccessibleSliderColumn(
+                                label = "Hấp thụ (Damping): ${(reverbDamping * 100).roundToInt()}%",
+                                value = reverbDamping,
+                                onValueChange = { reverbDamping = it },
+                                valueRange = 0.0f..1.0f
+                            )
+                            AccessibleSliderColumn(
+                                label = "Mức Reverb (Wet): ${(reverbWet * 100).roundToInt()}%",
+                                value = reverbWet,
+                                onValueChange = { reverbWet = it },
+                                valueRange = 0.0f..0.8f
+                            )
                         }
                     }
                 }
 
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(checked = enableComp, onCheckedChange = { enableComp = it })
-                            Text("Bật Compressor (Nén âm lượng)", fontWeight = FontWeight.SemiBold)
-                        }
+                        AccessibleCheckboxRow(checked = enableComp, onCheckedChange = { enableComp = it }, text = "Bật Compressor (Nén âm lượng)")
                         if (enableComp) {
                             TimeBlock(compStartMs, { compStartMs = it }, compEndMs, { compEndMs = it }, "Nén âm lượng Compressor")
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Checkbox(checked = compIsLimiter, onCheckedChange = { compIsLimiter = it }, modifier = Modifier.semantics { contentDescription = "Chế độ Limiter chặn cứng" })
-                                Text("Chế độ Limiter (chặn cứng)")
-                            }
-                            Text("Ngưỡng (Threshold): ${compThresholdDb.roundToInt()} dB")
-                            Slider(value = compThresholdDb, onValueChange = { compThresholdDb = it }, valueRange = -40f..0f, modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Thanh trượt Ngưỡng nén âm thanh" })
-                            Text("Tỉ lệ nén (Ratio): ${compRatio.roundToInt()}:1")
-                            Slider(value = compRatio, onValueChange = { compRatio = it }, valueRange = 1f..20f, modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Thanh trượt Tỉ lệ nén" })
-                            Text("Attack: ${compAttackMs.roundToInt()} ms")
-                            Slider(value = compAttackMs, onValueChange = { compAttackMs = it }, valueRange = 1f..100f, modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Thanh trượt thời gian Attack" })
-                            Text("Release: ${compReleaseMs.roundToInt()} ms")
-                            Slider(value = compReleaseMs, onValueChange = { compReleaseMs = it }, valueRange = 10f..1000f, modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Thanh trượt thời gian Release" })
-                            Text("Bù Gain (Makeup): ${compMakeupDb.roundToInt()} dB")
-                            Slider(value = compMakeupDb, onValueChange = { compMakeupDb = it }, valueRange = 0f..20f, modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Thanh trượt Bù Gain" })
+                            AccessibleCheckboxRow(checked = compIsLimiter, onCheckedChange = { compIsLimiter = it }, text = "Chế độ Limiter (chặn cứng)")
+                            AccessibleSliderColumn(
+                                label = "Ngưỡng (Threshold): ${compThresholdDb.roundToInt()} dB",
+                                value = compThresholdDb,
+                                onValueChange = { compThresholdDb = it },
+                                valueRange = -40f..0f
+                            )
+                            AccessibleSliderColumn(
+                                label = "Tỉ lệ nén (Ratio): ${compRatio.roundToInt()}:1",
+                                value = compRatio,
+                                onValueChange = { compRatio = it },
+                                valueRange = 1f..20f
+                            )
+                            AccessibleSliderColumn(
+                                label = "Attack: ${compAttackMs.roundToInt()} ms",
+                                value = compAttackMs,
+                                onValueChange = { compAttackMs = it },
+                                valueRange = 1f..100f
+                            )
+                            AccessibleSliderColumn(
+                                label = "Release: ${compReleaseMs.roundToInt()} ms",
+                                value = compReleaseMs,
+                                onValueChange = { compReleaseMs = it },
+                                valueRange = 10f..1000f
+                            )
+                            AccessibleSliderColumn(
+                                label = "Bù Gain (Makeup): ${compMakeupDb.roundToInt()} dB",
+                                value = compMakeupDb,
+                                onValueChange = { compMakeupDb = it },
+                                valueRange = 0f..20f
+                            )
                         }
                     }
                 }
 
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(checked = enableEq, onCheckedChange = { enableEq = it })
-                            Text("Bật EQ (Equalizer 5 dải tần)", fontWeight = FontWeight.SemiBold)
-                        }
+                        AccessibleCheckboxRow(checked = enableEq, onCheckedChange = { enableEq = it }, text = "Bật EQ (Equalizer 5 dải tần)")
                         if (enableEq) {
                             TimeBlock(eqStartMs, { eqStartMs = it }, eqEndMs, { eqEndMs = it }, "Equalizer")
                             ExposedDropdownMenuBox(
@@ -739,13 +805,17 @@ fun OtherScreen(navController: NavController) {
                             }
                             val freqs = listOf("60Hz (Siêu trầm)", "230Hz (Bass)", "910Hz (Mid)", "3.6kHz (Presence)", "14kHz (Treble)")
                             eqBands.forEachIndexed { i, _ ->
-                                Text("${freqs[i]}: ${if (eqBands[i] > 0) "+" else ""}${eqBands[i].roundToInt()} dB")
-                                Slider(value = eqBands[i], onValueChange = { 
-                                    val newBands = eqBands.copyOf()
-                                    newBands[i] = it
-                                    eqBands = newBands
-                                    if (eqPresetIndex != 0) eqPresetIndex = 0
-                                }, valueRange = -15f..15f, modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Thanh trượt dải tần số ${freqs[i]}" })
+                                AccessibleSliderColumn(
+                                    label = "${freqs[i]}: ${if (eqBands[i] > 0) "+" else ""}${eqBands[i].roundToInt()} dB",
+                                    value = eqBands[i],
+                                    onValueChange = { 
+                                        val newBands = eqBands.copyOf()
+                                        newBands[i] = it
+                                        eqBands = newBands
+                                        if (eqPresetIndex != 0) eqPresetIndex = 0
+                                    },
+                                    valueRange = -15f..15f
+                                )
                             }
                         }
                     }
@@ -761,6 +831,7 @@ fun OtherScreen(navController: NavController) {
                         onValueChange = {},
                         readOnly = true,
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedChannel) },
+                        label = { Text("Chế độ kênh âm thanh") },
                         modifier = Modifier.menuAnchor().fillMaxWidth()
                     )
                     ExposedDropdownMenu(expanded = expandedChannel, onDismissRequest = { expandedChannel = false }) {

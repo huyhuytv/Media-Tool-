@@ -38,6 +38,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.semantics.Role
+import com.example.ui.components.AccessibleCheckboxRow
+import com.example.ui.components.AccessibleSliderColumn
 
 data class BgAudioItem(
     val id: String = java.util.UUID.randomUUID().toString(),
@@ -392,32 +396,25 @@ fun MixScreen(navController: NavController) {
             }
 
             if (isMixModeVideo) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(checked = muteBaseVideo, onCheckedChange = { muteBaseVideo = it }, modifier = Modifier.semantics { contentDescription = "Tắt âm thanh gốc của Video" })
-                    Text("Tắt âm thanh gốc của Video")
-                }
+                AccessibleCheckboxRow(
+                    checked = muteBaseVideo,
+                    onCheckedChange = { muteBaseVideo = it },
+                    text = "Tắt âm thanh gốc của Video"
+                )
             }
 
-            Text("Âm lượng Gốc: ${(baseVolume * 100).toInt()}%")
-            Slider(
-                value = baseVolume, 
-                onValueChange = { baseVolume = it; if (basePlayer != null) basePlayer?.volume = it }, 
-                valueRange = 0f..1.5f,
-                modifier = Modifier.semantics {
-                    contentDescription = "Thanh trượt âm lượng file gốc"
-                    stateDescription = "${(baseVolume * 100).toInt()} phần trăm"
-                }
+            AccessibleSliderColumn(
+                label = "Âm lượng Gốc: ${(baseVolume * 100).toInt()}%",
+                value = baseVolume,
+                onValueChange = { baseVolume = it; if (basePlayer != null) basePlayer?.volume = it },
+                valueRange = 0f..1.5f
             )
             
-            Text("Pan Trái/Phải (Gốc): $basePan (0=Trái, 50=Giữa, 100=Phải)")
-            Slider(
-                value = basePan.toFloat(), 
-                onValueChange = { basePan = it.toInt() }, 
-                valueRange = 0f..100f,
-                modifier = Modifier.semantics {
-                    contentDescription = "Thanh trượt cân bằng trái phải file gốc"
-                    stateDescription = "$basePan"
-                }
+            AccessibleSliderColumn(
+                label = "Pan Trái/Phải (Gốc): $basePan (0=Trái, 50=Giữa, 100=Phải)",
+                value = basePan.toFloat(),
+                onValueChange = { basePan = it.toInt() },
+                valueRange = 0f..100f
             )
 
             Button(onClick = { toggleBasePlayer() }, modifier = Modifier.fillMaxWidth()) {
@@ -462,26 +459,18 @@ fun MixScreen(navController: NavController) {
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
                         )
                         
-                        Text("Âm lượng: ${(audio.volume * 100).toInt()}%")
-                        Slider(
-                            value = audio.volume, 
-                            onValueChange = { bgAudios[index] = audio.copy(volume = it) }, 
-                            valueRange = 0f..1.5f,
-                            modifier = Modifier.semantics {
-                                contentDescription = "Thanh trượt âm lượng nhạc nền ${index + 1}"
-                                stateDescription = "${(audio.volume * 100).toInt()} phần trăm"
-                            }
+                        AccessibleSliderColumn(
+                            label = "Âm lượng: ${(audio.volume * 100).toInt()}%",
+                            value = audio.volume,
+                            onValueChange = { bgAudios[index] = audio.copy(volume = it) },
+                            valueRange = 0f..1.5f
                         )
                         
-                        Text("Pan L/R: ${audio.pan} (0=L, 100=R)")
-                        Slider(
-                            value = audio.pan.toFloat(), 
-                            onValueChange = { bgAudios[index] = audio.copy(pan = it.toInt()) }, 
-                            valueRange = 0f..100f,
-                            modifier = Modifier.semantics {
-                                contentDescription = "Thanh trượt cân bằng kênh nhạc nền ${index + 1}"
-                                stateDescription = "${audio.pan}"
-                            }
+                        AccessibleSliderColumn(
+                            label = "Pan L/R: ${audio.pan} (0=L, 100=R)",
+                            value = audio.pan.toFloat(),
+                            onValueChange = { bgAudios[index] = audio.copy(pan = it.toInt()) },
+                            valueRange = 0f..100f
                         )
                     }
                 }
@@ -489,14 +478,16 @@ fun MixScreen(navController: NavController) {
 
             Divider(modifier = Modifier.padding(vertical = 8.dp))
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(checked = loopBg, onCheckedChange = { loopBg = it }, modifier = Modifier.semantics { contentDescription = "Lặp lại nhạc nền" })
-                Text("Lặp lại nhạc nền")
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(checked = autoDuck, onCheckedChange = { autoDuck = it }, modifier = Modifier.semantics { contentDescription = "Tự động nhỏ nhạc nền khi có tiếng nói" })
-                Text("Auto-Ducking (Tự động nhỏ nhạc nền khi có tiếng)")
-            }
+            AccessibleCheckboxRow(
+                checked = loopBg,
+                onCheckedChange = { loopBg = it },
+                text = "Lặp lại nhạc nền"
+            )
+            AccessibleCheckboxRow(
+                checked = autoDuck,
+                onCheckedChange = { autoDuck = it },
+                text = "Auto-Ducking (Tự động nhỏ nhạc nền khi có tiếng)"
+            )
 
             Text(text = progressMsg, modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite }, textAlign = TextAlign.Center, fontWeight = FontWeight.Bold)
             if (isProcessing) {
@@ -513,11 +504,22 @@ fun MixScreen(navController: NavController) {
             }
             
             if (hasOutput) {
-                Button(onClick = { 
-                    val ext = if (isMixModeVideo) "mp4" else outputPath.substringAfterLast(".", "m4a")
-                    saveLauncher.launch("mixed_result_${System.currentTimeMillis()}.$ext")
-                }, modifier = Modifier.fillMaxWidth()) {
-                    Text("Lưu File đã ghép vào thiết bị")
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Button(onClick = { 
+                            val ext = if (isMixModeVideo) "mp4" else outputPath.substringAfterLast(".", "m4a")
+                            saveLauncher.launch("mixed_result_${System.currentTimeMillis()}.$ext")
+                        }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Lưu File đã ghép vào thiết bị")
+                        }
+                        
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(if (isMixModeVideo) "▶ Xem video hoặc Nghe file kết quả:" else "▶ Nghe file kết quả:", fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
+                        com.example.ui.components.VideoPlayer(uri = Uri.fromFile(File(outputPath)))
+                    }
                 }
             }
             

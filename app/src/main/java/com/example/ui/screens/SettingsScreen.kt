@@ -44,8 +44,6 @@ fun SettingsScreen(navController: NavController) {
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Chất lượng Video đầu ra:", color = Color(0xFF00A0FF), fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-                    
                     var expandedVid by remember { mutableStateOf(false) }
                     val vidList = listOf("2 Mbps (Nhẹ, tiết kiệm)", "5 Mbps (Mặc định, chuẩn đẹp)", "10 Mbps (Chất lượng cao)", "20 Mbps (Rất nét, File lớn)", "50 Mbps (Studio/4K, File siêu lớn)")
                     
@@ -54,6 +52,7 @@ fun SettingsScreen(navController: NavController) {
                             value = vidList.getOrNull(vidIndex) ?: vidList[1],
                             onValueChange = {},
                             readOnly = true,
+                            label = { Text("Chất lượng Video đầu ra", color = Color(0xFF00A0FF), fontWeight = FontWeight.SemiBold) },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedVid) },
                             modifier = Modifier.menuAnchor().fillMaxWidth()
                         )
@@ -64,7 +63,6 @@ fun SettingsScreen(navController: NavController) {
                         }
                     }
 
-                    Text("Chất lượng Âm thanh (Audio Bitrate):", color = Color(0xFF00AA00), fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp))
                     var expandedAud by remember { mutableStateOf(false) }
                     val audList = listOf("128k (Cơ bản)", "192k (Khá)", "256k (Chất lượng cao)", "320k (Studio/Chuyên nghiệp)", "Giữ nguyên bản gốc / Lossless")
                     
@@ -73,6 +71,7 @@ fun SettingsScreen(navController: NavController) {
                             value = audList.getOrNull(audIndex) ?: audList[3],
                             onValueChange = {},
                             readOnly = true,
+                            label = { Text("Chất lượng Âm thanh (Audio Bitrate)", color = Color(0xFF00AA00), fontWeight = FontWeight.SemiBold) },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedAud) },
                             modifier = Modifier.menuAnchor().fillMaxWidth()
                         )
@@ -83,7 +82,6 @@ fun SettingsScreen(navController: NavController) {
                         }
                     }
 
-                    Text("Định dạng xuất âm thanh (Khi trích xuất/Audio):", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp))
                     var expandedFmt by remember { mutableStateOf(false) }
                     val fmtList = listOf("AAC (.m4a) - Mặc định, tốt", "MP3 (.mp3) - Phổ thông", "WAV (.wav) - Không nén, file rất lớn", "FLAC (.flac) - Không nén Lossless")
                     
@@ -92,6 +90,7 @@ fun SettingsScreen(navController: NavController) {
                             value = fmtList.getOrNull(fmtIndex) ?: fmtList[0],
                             onValueChange = {},
                             readOnly = true,
+                            label = { Text("Định dạng xuất âm thanh (Khi trích xuất/Audio)", fontWeight = FontWeight.SemiBold) },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedFmt) },
                             modifier = Modifier.menuAnchor().fillMaxWidth()
                         )

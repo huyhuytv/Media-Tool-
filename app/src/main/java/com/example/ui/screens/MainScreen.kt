@@ -21,6 +21,7 @@ fun MainScreen(
     onNavigateToMix: () -> Unit,
     onNavigateToImg2Vid: () -> Unit,
     onNavigateToSub: () -> Unit,
+    onNavigateToStem: () -> Unit,
     onNavigateToOther: () -> Unit,
     onNavigateToSettings: () -> Unit
 ) {
@@ -107,6 +108,16 @@ fun MainScreen(
                 colors = ButtonDefaults.buttonColors(contentColor = Color(0xFF8800FF))
             ) {
                 Text("📝 ĐỌC & TRÍCH XUẤT PHỤ ĐỀ")
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Button(
+                onClick = onNavigateToStem,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(contentColor = Color(0xFFFFA500))
+            ) {
+                Text("🎙 TÁCH NHẠC VÀ LỜI (AI TRÊN MÁY)")
             }
 
             Spacer(modifier = Modifier.height(24.dp))

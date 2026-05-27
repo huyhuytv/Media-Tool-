@@ -19,6 +19,7 @@ fun AppNavigation() {
                 onNavigateToMix = { navController.navigate(Route.Mix.path) },
                 onNavigateToImg2Vid = { navController.navigate(Route.Img2Vid.path) },
                 onNavigateToSub = { navController.navigate(Route.Sub.path) },
+                onNavigateToStem = { navController.navigate(Route.Stem.path) },
                 onNavigateToOther = { navController.navigate(Route.Other.path) },
                 onNavigateToSettings = { navController.navigate(Route.Settings.path) }
             )
@@ -29,6 +30,7 @@ fun AppNavigation() {
         composable(Route.Mix.path) { MixScreen(navController = navController) }
         composable(Route.Img2Vid.path) { Img2VidScreen(navController = navController) }
         composable(Route.Sub.path) { SubScreen(navController = navController) }
+        composable(Route.Stem.path) { StemScreen(onNavigateBack = { navController.popBackStack() }) }
         composable(Route.Other.path) { OtherScreen(navController = navController) }
         composable(Route.Settings.path) { SettingsScreen(navController = navController) }
     }

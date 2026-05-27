@@ -142,7 +142,7 @@ fun TrimScreen(navController: NavController) {
                 val durationArg = if (duration > 0.0) "-t $duration" else ""
                               
                 val codecArg = if (isAudio) {
-                    if (com.example.core.SettingsManager.isAudioLossless(context)) {
+                    val baseCodec = if (com.example.core.SettingsManager.isAudioLossless(context)) {
                         "-c copy" 
                     } else {
                         val acodec = com.example.core.SettingsManager.getAudioCodecArg(context)
@@ -153,6 +153,7 @@ fun TrimScreen(navController: NavController) {
                             "$acodec $abitrate"
                         }
                     }
+                    "-vn $baseCodec"
                 } else {
                     "-c copy"
                 }
@@ -176,9 +177,9 @@ fun TrimScreen(navController: NavController) {
                                 Toast.makeText(context, "Cắt thành công!", Toast.LENGTH_SHORT).show()
                             }
                             is MediaEngine.ExecutionState.Error -> {
-                                progressMsg = "Lỗi: ${state.returnCode}"
+                                progressMsg = "Lỗi: ${state.returnCode} - ${state.failStackTrace ?: "Unknown error"}"
                                 isProcessing = false
-                                Toast.makeText(context, "Lỗi cắt file", Toast.LENGTH_LONG).show()
+                                Toast.makeText(context, "Lỗi cắt file! Xem thông báo trên màn hình", Toast.LENGTH_LONG).show()
                             }
                         }
                     }
@@ -225,13 +226,12 @@ fun TrimScreen(navController: NavController) {
 
             Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(text = "Mốc bắt đầu (ms)")
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         OutlinedTextField(
                             value = startMs,
                             onValueChange = { startMs = it.filter { char -> char.isDigit() } },
                             modifier = Modifier.weight(1f),
-                            label = { Text("Bắt đầu (mili giây)") },
+                            label = { Text("Mốc bắt đầu (ms)") },
                             placeholder = { Text("0") },
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next)
@@ -243,13 +243,12 @@ fun TrimScreen(navController: NavController) {
                         }
                     }
 
-                    Text(text = "Mốc kết thúc (ms, để 0 lấy đến hết)")
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         OutlinedTextField(
                             value = endMs,
                             onValueChange = { endMs = it.filter { char -> char.isDigit() } },
                             modifier = Modifier.weight(1f),
-                            label = { Text("Kết thúc (mili giây)") },
+                            label = { Text("Mốc kết thúc (ms, để 0 lấy đến hết)") },
                             placeholder = { Text("0") },
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done)
@@ -301,6 +300,10 @@ fun TrimScreen(navController: NavController) {
                         }, modifier = Modifier.fillMaxWidth()) {
                             Text("Lưu file vào thiết bị")
                         }
+                        
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text("▶ Xem/Nghe file kết quả:", fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
+                        com.example.ui.components.VideoPlayer(uri = Uri.fromFile(File(outputPath)))
                     }
                 }
             }

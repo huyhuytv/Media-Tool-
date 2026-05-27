@@ -265,6 +265,10 @@ fun JoinScreen(navController: NavController) {
                         }, modifier = Modifier.fillMaxWidth()) {
                             Text("Lưu file vào thiết bị")
                         }
+                        
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text("▶ Nghe file kết quả:", fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
+                        com.example.ui.components.VideoPlayer(uri = Uri.fromFile(File(outputPath)))
                     }
                 }
             }

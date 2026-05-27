@@ -8,6 +8,7 @@ sealed class Route(val path: String) {
     object Mix : Route("mix")
     object Img2Vid : Route("img2vid")
     object Sub : Route("sub")
+    object Stem : Route("stem")
     object Other : Route("other")
     object Settings : Route("settings")
 }
