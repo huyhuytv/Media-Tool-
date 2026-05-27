@@ -34,8 +34,8 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
         private const val TAG = "AudioSeparator"
         private const val SAMPLE_RATE = 44100
         private const val CHANNELS = 2
-        // Chunk size: 4 seconds of 44100Hz audio. Reduced to 4 seconds to prevent OOM on mobile.
-        private const val CHUNK_FRAMES = 44100 * 4
+        // Chunk size: Demucs ONNX model expects EXACTLY 343980 frames (approx 7.8 seconds).
+        private const val CHUNK_FRAMES = 343980
         private const val BYTES_PER_FRAME = CHANNELS * 4
     }
 
@@ -70,6 +70,7 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
             val env = OrtEnvironment.getEnvironment()
             val sessionOptions = OrtSession.SessionOptions().apply {
                 setOptimizationLevel(OrtSession.SessionOptions.OptLevel.BASIC_OPT)
+                setIntraOpNumThreads(4) // Limit threads to avoid CPU starvation and OOM on mobile
             }
             // Optional: Optimize for memory/speed
             
@@ -104,17 +105,20 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
                         .order(ByteOrder.LITTLE_ENDIAN)
                         .asFloatBuffer()
 
-                    // De-interleave: L, R, L, R -> LLLL..., RRRR...
+                    // De-interleave and pad: L, R, L, R -> LLLL..., RRRR... with fixed chunk size
                     tensorBuffer.clear()
+                    for (i in 0 until CHANNELS * CHUNK_FRAMES) {
+                        tensorBuffer.put(i, 0f)
+                    }
                     for (ch in 0 until CHANNELS) {
                         for (f in 0 until framesRead) {
-                            tensorBuffer.put(ch * framesRead + f, floatBuffer.get(f * CHANNELS + ch))
+                            tensorBuffer.put(ch * CHUNK_FRAMES + f, floatBuffer.get(f * CHANNELS + ch))
                         }
                     }
 
                     // Create ONNX Tensor
                     // Shape: [1 (batch), 2 (channels), frames]
-                    val shape = longArrayOf(1, CHANNELS.toLong(), framesRead.toLong())
+                    val shape = longArrayOf(1, CHANNELS.toLong(), CHUNK_FRAMES.toLong())
                     val inputTensor = OnnxTensor.createTensor(env, tensorBuffer, shape)
 
                     val inputName = session.inputNames.iterator().next()

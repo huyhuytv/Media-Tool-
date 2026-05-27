@@ -121,6 +121,33 @@ fun Img2VidScreen(navController: NavController) {
                 val outputDir = File(context.cacheDir, "img2vid").apply { mkdirs() }
                 val outputFile = File(outputDir, "video_${System.currentTimeMillis()}.mp4")
                 
+                val copiedImages = mutableListOf<File>()
+                for ((index, uri) in selectedImageUris.withIndex()) {
+                    val mimeType = context.contentResolver.getType(uri) ?: ""
+                    val ext = if (mimeType.contains("png")) ".png" else if (mimeType.contains("webp")) ".webp" else ".jpg"
+                    val tempFile = File(context.cacheDir, "img2vid_temp_${System.currentTimeMillis()}_$index$ext")
+                    try {
+                        context.contentResolver.openInputStream(uri)?.use { input ->
+                            tempFile.outputStream().use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+                        if (tempFile.exists() && tempFile.length() > 0) {
+                            copiedImages.add(tempFile)
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+                
+                if (copiedImages.isEmpty()) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(context, "Lỗi đọc file ảnh", Toast.LENGTH_SHORT).show()
+                        isProcessing = false
+                    }
+                    return@launch
+                }
+                
                 val scaleFilter = when (ratioIndex) {
                     0 -> "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2"
                     1 -> "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2"
@@ -136,23 +163,17 @@ fun Img2VidScreen(navController: NavController) {
                 val aCodec = if (isLossless || usesIncompatibleCodec) "-c:a aac" else rawCodec
                 val aBitrate = if (isLossless || usesIncompatibleCodec) "-b:a ${com.example.core.SettingsManager.getAudioBitrateInt(context)/1000}k" else com.example.core.SettingsManager.getAudioBitrateArg(context)
     
-                val command = if (selectedImageUris.size == 1) {
-                    val imgSaf = mediaEngine.getSafParameter(selectedImageUris.first())
-                    "-y -loop 1 -framerate 1 -i \"$imgSaf\" -i \"$audioSaf\" -vf \"$scaleFilter\" -c:v libx264 $vPreset $vBitrate -tune stillimage $aCodec $aBitrate -pix_fmt yuv420p -shortest \"${outputFile.absolutePath}\""
+                val command = if (copiedImages.size == 1) {
+                    val imgPath = copiedImages.first().absolutePath
+                    "-y -loop 1 -framerate 1 -i \"$imgPath\" -i \"$audioSaf\" -vf \"$scaleFilter\" -c:v libx264 $vPreset $vBitrate -tune stillimage $aCodec $aBitrate -pix_fmt yuv420p -shortest \"${outputFile.absolutePath}\""
                 } else {
                     val concatFile = File(context.cacheDir, "img_concat.txt")
                     val writer = FileWriter(concatFile)
-                    selectedImageUris.forEach { uri ->
-                        val saf = mediaEngine.getSafParameter(uri)
-                        saf?.let {
-                            writer.write("file '${it.replace("'", "'\\''")}'\n")
-                            writer.write("duration 3\n")
-                        }
+                    copiedImages.forEach { file ->
+                        writer.write("file '${file.absolutePath.replace("'", "'\\''")}'\n")
+                        writer.write("duration 3\n")
                     }
-                    val lastSaf = mediaEngine.getSafParameter(selectedImageUris.last())
-                    lastSaf?.let {
-                        writer.write("file '${it.replace("'", "'\\''")}'\n")
-                    }
+                    writer.write("file '${copiedImages.last().absolutePath.replace("'", "'\\''")}'\n")
                     writer.close()
                     
                     "-y -stream_loop -1 -f concat -safe 0 -i \"${concatFile.absolutePath}\" -i \"$audioSaf\" -vf \"$scaleFilter\" -c:v libx264 $vPreset $vBitrate -tune stillimage $aCodec $aBitrate -pix_fmt yuv420p -shortest \"${outputFile.absolutePath}\""

@@ -44,7 +44,7 @@ fun StemScreen(
     var resultMusicUri by remember { mutableStateOf<Uri?>(null) }
 
     val audioPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument(),
+        contract = ActivityResultContracts.GetContent(),
         onResult = { uri ->
             if (uri != null) {
                 selectedAudioUri = uri
@@ -163,7 +163,7 @@ fun StemScreen(
                             modifier = Modifier.padding(bottom = 24.dp)
                         )
                         
-                        Button(onClick = { audioPicker.launch(arrayOf("audio/*", "video/*")) }) {
+                        Button(onClick = { audioPicker.launch("*/*") }) {
                             Text(if (selectedAudioUri == null) "Chọn File Âm Thanh/Video" else "Đã chọn file: ${selectedAudioUri?.lastPathSegment}")
                         }
                         
