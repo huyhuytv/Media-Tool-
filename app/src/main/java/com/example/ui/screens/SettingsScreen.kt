@@ -100,6 +100,33 @@ fun SettingsScreen(navController: NavController) {
                             }
                         }
                     }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text("Gỡ lỗi & Hỗ trợ", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                    OutlinedButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            try {
+                                val downloadsDir = context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)
+                                val logFile = java.io.File(downloadsDir, "audio_separator_log.txt")
+                                if (logFile.exists()) {
+                                    val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.provider", logFile)
+                                    val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                                        addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    }
+                                    context.startActivity(android.content.Intent.createChooser(intent, "Chia sẻ Nhật ký"))
+                                } else {
+                                    android.widget.Toast.makeText(context, "Chưa có file nhật ký nào.", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                            } catch (e: Exception) {
+                                android.widget.Toast.makeText(context, "Lỗi khi chia sẻ: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    ) {
+                        Text("Chia sẻ File Nhật ký (Log) Tách Audio")
+                    }
                 }
             }
 

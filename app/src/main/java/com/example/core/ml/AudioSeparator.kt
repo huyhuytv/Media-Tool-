@@ -2,6 +2,7 @@ package com.example.core.ml
 
 import android.content.Context
 import android.net.Uri
+import android.os.Environment
 import android.util.Log
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.ReturnCode
@@ -18,8 +19,12 @@ import java.io.DataOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.FileWriter
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.coroutines.coroutineContext
 
 sealed class SeparationState {
@@ -38,6 +43,42 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
         private const val BYTES_PER_FRAME = CHANNELS * 2 // s16le = 2 bytes / sample
     }
 
+    private fun log(message: String) {
+        Log.d(TAG, message)
+        try {
+            val downloadsDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+            if (downloadsDir != null && (downloadsDir.exists() || downloadsDir.mkdirs())) {
+                val logFile = File(downloadsDir, "audio_separator_log.txt")
+                val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
+                val logMessage = "[$timestamp] $message\n"
+                val writer = FileWriter(logFile, true)
+                writer.append(logMessage)
+                writer.flush()
+                writer.close()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error writing log to file: ${e.message}", e)
+        }
+    }
+
+    private fun logError(message: String, error: Throwable? = null) {
+        Log.e(TAG, message, error)
+        try {
+            val downloadsDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+            if (downloadsDir != null && (downloadsDir.exists() || downloadsDir.mkdirs())) {
+                val logFile = File(downloadsDir, "audio_separator_log.txt")
+                val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
+                val logMessage = "[$timestamp] ERROR: $message | Exception: ${error?.message}\n${error?.stackTraceToString() ?: ""}\n"
+                val writer = FileWriter(logFile, true)
+                writer.append(logMessage)
+                writer.flush()
+                writer.close()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error writing log to file: ${e.message}", e)
+        }
+    }
+
     suspend fun separate(inputUri: Uri): Flow<SeparationState> = flow {
     	emit(SeparationState.Progress(0.01f)) // Start
 
@@ -47,7 +88,11 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
         val tempRawVocals = File(cacheDir, "vocals.raw")
         val tempRawMusic = File(cacheDir, "music.raw")
         
+        log("Bắt đầu xử lý tách audio. Model: ${modelFile.absolutePath}, InputUri: $inputUri")
         try {
+            // Delete previous log file to start fresh if needed, or keep appending. 
+            // We append. Let's just log start.
+            
             tempRawMix.delete()
             tempRawVocals.delete()
             tempRawMusic.delete()
@@ -56,12 +101,15 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
             emit(SeparationState.Progress(0.05f))
             val inputPath = com.arthenica.ffmpegkit.FFmpegKitConfig.getSafParameterForRead(context, inputUri)
             val decodeCmd = "-y -i \"$inputPath\" -f s16le -ac $CHANNELS -ar $SAMPLE_RATE \"${tempRawMix.absolutePath}\""
+            log("Chạy FFmpeg decode: $decodeCmd")
             val decodeSession = FFmpegKit.execute(decodeCmd)
             
             if (!ReturnCode.isSuccess(decodeSession.returnCode)) {
                 val logs = decodeSession.allLogsAsString
+                logError("Lỗi giải mã. Logs: $logs")
                 throw Exception("Lỗi khi giải mã audio (FFmpeg). Chi tiết: $logs")
             }
+            log("FFmpeg decode thành công. Size: ${tempRawMix.length()} bytes")
 
             emit(SeparationState.Progress(0.1f)) // Decode complete
 
@@ -75,8 +123,10 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
             val session = env.createSession(modelFile.absolutePath, sessionOptions)
 
             try {
+                log("Khởi tạo model ONNX thành công.")
                 val totalBytes = tempRawMix.length()
                 val totalFrames = totalBytes / BYTES_PER_FRAME
+                log("Tổng số frames audio gốc: $totalFrames (Total bytes: $totalBytes)")
                 
                 var processedFrames = 0L
 
@@ -99,6 +149,7 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
                 val musicMerged = ByteBuffer.allocate(CHUNK_FRAMES * BYTES_PER_FRAME).order(ByteOrder.LITTLE_ENDIAN)
 
                 var isFirstChunk = true
+                var chunkIndex = 0
 
                 while (coroutineContext.isActive) {
                     val framesToRead = if (isFirstChunk) CHUNK_FRAMES else stepSize
@@ -112,8 +163,10 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
                     }
                     
                     val actualFramesRead = bytesRead / BYTES_PER_FRAME
+                    log("Chunk $chunkIndex: Đọc được $actualFramesRead frames ($bytesRead bytes)")
 
                     if (actualFramesRead == 0 && !isFirstChunk) {
+                        log("EOF: Xả nốt đoạn overlap cuối cùng (size $overlapSize frames)")
                         // EOF: Xả nốt đoạn overlap cuối cùng.
                         vocalsMerged.clear()
                         musicMerged.clear()
@@ -170,7 +223,9 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
                     val inputMap = mapOf(inputName to inputTensor)
 
                     // Inference
+                    log("Chunk $chunkIndex: Bắt đầu Inference ONNX...")
                     val result = session.run(inputMap)
+                    log("Chunk $chunkIndex: ONNX Inference hoàn tất.")
                     
                     val outputTensor = result.get(0).value as Array<*> // [1][4][2][frames]
                     val batchOut = outputTensor[0] as Array<*> // [4][2][frames]
@@ -210,6 +265,7 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
 
                     vocalsOut.write(vocalsMerged.array(), 0, framesToWrite * BYTES_PER_FRAME)
                     musicOut.write(musicMerged.array(), 0, framesToWrite * BYTES_PER_FRAME)
+                    log("Chunk $chunkIndex: Ghi $framesToWrite frames ra file.")
                     
                     // Lưu Overlap cho chunk kế tiếp
                     if (isFullRead) {
@@ -238,6 +294,7 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
                     emit(SeparationState.Progress(progress.coerceAtMost(0.88f)))
                     
                     isFirstChunk = false
+                    chunkIndex++
                 }
 
                 inputStream.close()
@@ -247,7 +304,7 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
 
             } catch (e: Exception) {
                 session.close()
-                Log.e(TAG, "Lỗi khi tách: ${e.message}")
+                logError("Lỗi khi tách: ${e.message}", e)
                 throw Exception("Lỗi khi xử lý mô hình AI: ${e.message}", e)
             }
 
@@ -257,6 +314,7 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
             val outVocals = File(context.filesDir, "vocals_${System.currentTimeMillis()}.mp3")
             val outMusic = File(context.filesDir, "music_${System.currentTimeMillis()}.mp3")
 
+            log("Bắt đầu Encode raw PCM sang MP3.")
             val encVocalCmd = "-y -f s16le -ac $CHANNELS -ar $SAMPLE_RATE -i \"${tempRawVocals.absolutePath}\" -c:a libmp3lame -b:a 320k \"${outVocals.absolutePath}\""
             val encMusicCmd = "-y -f s16le -ac $CHANNELS -ar $SAMPLE_RATE -i \"${tempRawMusic.absolutePath}\" -c:a libmp3lame -b:a 320k \"${outMusic.absolutePath}\""
 
@@ -264,8 +322,11 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
             val res2 = FFmpegKit.execute(encMusicCmd)
 
             if (!ReturnCode.isSuccess(res1.returnCode) || !ReturnCode.isSuccess(res2.returnCode)) {
+                logError("Lỗi export FFmpeg - Vocals: ${res1.allLogsAsString}")
+                logError("Lỗi export FFmpeg - Music: ${res2.allLogsAsString}")
                 throw Exception("Lỗi khi xuất file mp3")
             }
+            log("Hoàn tất tách audio. Vocals: ${outVocals.absolutePath}, Music: ${outMusic.absolutePath}")
 
             emit(SeparationState.Progress(1.0f))
             emit(SeparationState.Success(outVocals, outMusic))
