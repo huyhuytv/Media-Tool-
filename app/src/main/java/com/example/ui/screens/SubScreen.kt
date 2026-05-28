@@ -175,7 +175,7 @@ fun SubScreen(navController: NavController, viewModel: SubViewModel = viewModel(
         ) {
             // [1] CHỌN VIDEO
             Text("[1] CHỌN VIDEO", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-            Button(onClick = { vidLauncher.launch("video/*") }, modifier = Modifier.fillMaxWidth()) {
+            Button(onClick = { vidLauncher.launch("*/*") }, modifier = Modifier.fillMaxWidth()) {
                 Text("Chọn Video")
             }
             Text("Video: ${state.videoFileName}", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -211,7 +211,7 @@ fun SubScreen(navController: NavController, viewModel: SubViewModel = viewModel(
                 value = if (state.durationMs > 0) state.currentTimeMs.toFloat() else 0f,
                 onValueChange = { viewModel.seekTo(it.toLong()) },
                 valueRange = 0f..(if (state.durationMs > 0) state.durationMs.toFloat() else 100f),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Thanh trượt tua thời gian video" }
             )
             
             Text("Âm lượng Video: ${(state.videoVolume * 100).roundToInt()}%")
@@ -219,7 +219,7 @@ fun SubScreen(navController: NavController, viewModel: SubViewModel = viewModel(
                 value = (state.videoVolume * 100f),
                 onValueChange = { viewModel.setVideoVolume(it / 100f) },
                 valueRange = 0f..100f,
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Thanh trượt điều chỉnh âm lượng video" }
             )
 
             HorizontalDivider()
@@ -243,8 +243,16 @@ fun SubScreen(navController: NavController, viewModel: SubViewModel = viewModel(
             Slider(
                 value = state.ttsSpeed,
                 onValueChange = { viewModel.setTtsSpeed(it) },
-                valueRange = 0.5f..2.0f,
-                modifier = Modifier.fillMaxWidth()
+                valueRange = 0.5f..3.0f,
+                modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Thanh trượt tốc độ đọc phụ đề" }
+            )
+
+            Text("Âm lượng giọng đọc: ${(state.ttsVolume * 100).roundToInt()}%")
+            Slider(
+                value = state.ttsVolume,
+                onValueChange = { viewModel.setTtsVolume(it) },
+                valueRange = 0f..1f,
+                modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Thanh trượt điều chỉnh âm lượng giọng đọc phụ đề" }
             )
 
             HorizontalDivider()

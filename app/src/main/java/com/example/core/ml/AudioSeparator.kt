@@ -122,7 +122,6 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
                 
                 // Buffer lưu các đoạn âm thanh nối (Overlap)
                 val outVocalsOverlap = FloatArray(overlapSize * CHANNELS)
-                val outMusicOverlap = FloatArray(overlapSize * CHANNELS)
 
                 val vocalsMerged = ByteBuffer.allocate(CHUNK_FRAMES * BYTES_PER_FRAME).order(ByteOrder.LITTLE_ENDIAN)
                 val musicMerged = ByteBuffer.allocate(CHUNK_FRAMES * BYTES_PER_FRAME).order(ByteOrder.LITTLE_ENDIAN)
@@ -145,12 +144,22 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
                     val actualFramesRead = bytesRead / BYTES_PER_FRAME
 
                     if (actualFramesRead == 0 && !isFirstChunk) {
-                        // EOF: Xả nốt đoạn overlap cuối cùng
+                        // EOF: Xả nốt đoạn overlap cuối cùng. Phục hồi Fade-out
                         vocalsMerged.clear()
                         musicMerged.clear()
                         for(i in 0 until overlapSize * CHANNELS) {
-                            vocalsMerged.putFloat(outVocalsOverlap[i])
-                            musicMerged.putFloat(outMusicOverlap[i])
+                            val frameIdxInOverlap = i / CHANNELS
+                            val rightWeight = (overlapSize - frameIdxInOverlap).toFloat() / overlapSize
+                            val invWeight = if (rightWeight > 0.001f) 1.0f / rightWeight else 1.0f
+                            
+                            val v_val = outVocalsOverlap[i] * invWeight
+                            val vClipped = v_val.coerceIn(-1.0f, 1.0f)
+                            
+                            val originalVal = chunkBuffer[i]
+                            val mClipped = (originalVal - vClipped).coerceIn(-1.0f, 1.0f)
+                            
+                            vocalsMerged.putFloat(vClipped)
+                            musicMerged.putFloat(mClipped)
                         }
                         vocalsOut.write(vocalsMerged.array(), 0, overlapSize * BYTES_PER_FRAME)
                         musicOut.write(musicMerged.array(), 0, overlapSize * BYTES_PER_FRAME)
@@ -202,10 +211,8 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
                     val outputTensor = result.get(0).value as Array<*> // [1][4][2][framesRead]
                     val batchOut = outputTensor[0] as Array<*> // [4][2][framesRead]
 
-                    // Assuming Stem order: 0=drums, 1=bass, 2=other, 3=vocals
-                    val drums = batchOut[0] as Array<FloatArray>
-                    val bass = batchOut[1] as Array<FloatArray>
-                    val other = batchOut[2] as Array<FloatArray>
+                    // Thường Stem order: 0=drums, 1=bass, 2=other, 3=vocals
+                    // Lấy chính xác Index cuối cùng (3) cho Vocals theo Demucs HT chuẩn
                     val vocals = batchOut[3] as Array<FloatArray>
                     
                     val isFullRead = (isFirstChunk && actualFramesRead == CHUNK_FRAMES) || (!isFirstChunk && actualFramesRead == stepSize)
@@ -216,21 +223,23 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
 
                     for (f in 0 until framesToWrite) {
                         for (ch in 0 until CHANNELS) {
-                            // Un-normalize the output từ mô hình.
-                            // FIX ERROR 4 & 5: Dùng công thức đúng. Tránh cộng Mean quá nhiều lần!
-                            var m_val = (drums[ch][f] + bass[ch][f] + other[ch][f]) * stdF + meanF
+                            val originalVal = chunkBuffer[f * CHANNELS + ch]
                             var v_val = vocals[ch][f] * stdF + meanF
                             
-                            // FIX ERROR 2: Crossfade Overlap-add để chống méo đoạn nối
+                            // Crossfade Overlap-add mượt mà cho đoạn nối
                             if (f < overlapSize && !isFirstChunk) {
                                 val weight = f.toFloat() / overlapSize
-                                m_val = m_val * weight + outMusicOverlap[f * CHANNELS + ch]
                                 v_val = v_val * weight + outVocalsOverlap[f * CHANNELS + ch]
                             }
 
-                            // FIX ERROR 3: Soft Clipping (Tanh) chống san phẳng gai âm thanh, giảm méo điện tử
-                            val vClipped = kotlin.math.tanh(v_val.toDouble()).toFloat()
-                            val mClipped = kotlin.math.tanh(m_val.toDouble()).toFloat()
+                            // KHÔNG DÙNG TANH (Gây méo/rè điện tử trầm trọng). Dùng dạng Clip Cứng (Hard Clip)
+                            // Tránh tràn số nhưng giữ nguyên độ sắc nét bản gốc
+                            val vClipped = v_val.coerceIn(-1.0f, 1.0f)
+                            
+                            // TẠO BEAT TUYỆT ĐỐI THEO ORIGINAL - VOCALS
+                            // Khắc phục lỗi Vocals lọt vào Beat và giảm tải cực nhiều xử lý. 
+                            // Vì Vocals đã được Overlap nét, phép trừ này giữ trọn vẹn chất lượng gốc!
+                            val mClipped = (originalVal - vClipped).coerceIn(-1.0f, 1.0f)
                             
                             vocalsMerged.putFloat(vClipped)
                             musicMerged.putFloat(mClipped)
@@ -244,15 +253,12 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
                     if (isFullRead) {
                         for (f in framesToWrite until CHUNK_FRAMES) {
                             for (ch in 0 until CHANNELS) {
-                                var m_val = (drums[ch][f] + bass[ch][f] + other[ch][f]) * stdF + meanF
                                 var v_val = vocals[ch][f] * stdF + meanF
 
                                 val rightWeight = (CHUNK_FRAMES - f).toFloat() / overlapSize
-                                m_val *= rightWeight
                                 v_val *= rightWeight
 
                                 val overIdx = f - framesToWrite
-                                outMusicOverlap[overIdx * CHANNELS + ch] = m_val
                                 outVocalsOverlap[overIdx * CHANNELS + ch] = v_val
                             }
                         }

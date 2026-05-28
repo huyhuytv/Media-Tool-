@@ -47,6 +47,7 @@ data class SubScreenState(
     
     val autoDuck: Boolean = true,
     val ttsSpeed: Float = 1.0f,
+    val ttsVolume: Float = 1.0f,
     
     // Extraction state
     val isExtracting: Boolean = false,
@@ -65,6 +66,7 @@ class SubViewModel : ViewModel() {
     private var currentSubIdx = 0
     
     // Track TTS reading to manage Auto-Duck
+    @Volatile
     private var isSpeaking = false
     private var originalVolumeBeforeDuck = 1.0f
 
@@ -75,13 +77,14 @@ class SubViewModel : ViewModel() {
      */
     fun parseSrt(content: String) {
         val items = mutableListOf<SubtitleItem>()
-        // Normalize line endings
+        // Normalize line endings and split by 2 or more newlines to handle variable formats safely
         val text = content.replace("\r\n", "\n")
-        val blocks = text.split("\n\n")
+        val blocks = text.split(Regex("\\n{2,}"))
         var idCounter = 1
         for (block in blocks) {
+            if (block.trim().startsWith("WEBVTT") || block.trim().startsWith("Kind:")) continue
             val lines = block.lines().map { it.trim() }.filter { it.isNotEmpty() }
-            if (lines.size >= 3) {
+            if (lines.size >= 2) {
                 // Assuming format: 
                 // 1
                 // 00:00:00,000 --> 00:00:02,000
@@ -195,7 +198,10 @@ class SubViewModel : ViewModel() {
         val player = exoPlayer ?: return
         if (player.isPlaying) {
             player.pause()
+            tts?.stop() // Dừng TTS ngay lập tức khi người dùng tạm dừng video
         } else {
+            val current = player.currentPosition
+            syncSubIndex(current) // Đồng bộ lại hàng đợi phụ đề tránh đọc lại các câu cũ
             player.play()
         }
     }
@@ -227,6 +233,10 @@ class SubViewModel : ViewModel() {
     fun setTtsSpeed(speed: Float) {
         _state.update { it.copy(ttsSpeed = speed) }
         tts?.setSpeechRate(speed)
+    }
+
+    fun setTtsVolume(vol: Float) {
+        _state.update { it.copy(ttsVolume = vol) }
     }
 
     private fun applyAutoDuck(duck: Boolean) {
@@ -280,7 +290,10 @@ class SubViewModel : ViewModel() {
             if (currentMs >= sub.startMs && currentMs <= sub.endMs) {
                 // It's time to speak!
                 val utteranceId = UUID.randomUUID().toString()
-                tts?.speak(sub.text, TextToSpeech.QUEUE_ADD, null, utteranceId)
+                val params = android.os.Bundle().apply {
+                    putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, _state.value.ttsVolume)
+                }
+                tts?.speak(sub.text, TextToSpeech.QUEUE_ADD, params, utteranceId)
                 currentSubIdx++
             } else if (currentMs > sub.endMs + 2000) {
                 // Fallback resync if it skipped
