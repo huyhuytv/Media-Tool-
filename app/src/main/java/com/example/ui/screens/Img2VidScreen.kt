@@ -109,7 +109,13 @@ fun Img2VidScreen(navController: NavController) {
         
         coroutineScope.launch(Dispatchers.IO) {
             try {
-                val tempAudioFile = File(context.cacheDir, "temp_img2vid_audio_${System.currentTimeMillis()}")
+                val audioMime = context.contentResolver.getType(audioUri!!) ?: ""
+                val audioExt = if (audioMime.contains("mp3")) ".mp3" 
+                               else if (audioMime.contains("wav")) ".wav" 
+                               else if (audioMime.contains("ogg")) ".ogg" 
+                               else if (audioMime.contains("flac")) ".flac"
+                               else ".m4a"
+                val tempAudioFile = File(context.cacheDir, "temp_img2vid_audio_${System.currentTimeMillis()}$audioExt")
                 var audioPath = ""
                 try {
                     context.contentResolver.openInputStream(audioUri!!)?.use { input ->
@@ -177,6 +183,7 @@ fun Img2VidScreen(navController: NavController) {
                 } else {
                     val concatFile = File(context.cacheDir, "img_concat.txt")
                     val writer = FileWriter(concatFile)
+                    writer.write("ffconcat version 1.0\n")
                     // Lặp lại nhiều lần để đảm bảo đủ dài cho video
                     for (i in 0 until 100) {
                         copiedImages.forEach { file ->
@@ -202,7 +209,7 @@ fun Img2VidScreen(navController: NavController) {
                                 Toast.makeText(context, "Tạo video thành công!", Toast.LENGTH_SHORT).show()
                             }
                             is MediaEngine.ExecutionState.Error -> {
-                                val logTail = state.logs?.takeLast(100) ?: state.failStackTrace?.takeLast(100) ?: "Lỗi không rõ"
+                                val logTail = state.logs?.takeLast(2000) ?: state.failStackTrace?.takeLast(2000) ?: "Lỗi không rõ"
                                 progressMsg = "Lỗi Code: ${state.returnCode}\n$logTail"
                                 isProcessing = false
                                 Toast.makeText(context, "Lỗi: ${state.returnCode}", Toast.LENGTH_LONG).show()
