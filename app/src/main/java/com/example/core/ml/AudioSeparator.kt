@@ -117,7 +117,7 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
             // 3. Process with ONNX
             val env = OrtEnvironment.getEnvironment()
             val sessionOptions = OrtSession.SessionOptions().apply {
-                setOptimizationLevel(OrtSession.SessionOptions.OptLevel.BASIC_OPT)
+                setOptimizationLevel(OrtSession.SessionOptions.OptLevel.NO_OPT)
                 setIntraOpNumThreads(4) // Limit threads to avoid CPU starvation and OOM on mobile
             }
             
@@ -231,19 +231,58 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
                     }
 
                     val validFramesInChunk = if (isFirstChunk) actualFramesRead else (overlapSize + actualFramesRead)
+                    
+                    // Normalize (Mono Mean/Std) for Demucs input
+                    var monoSum = 0.0
+                    for (f in 0 until validFramesInChunk) {
+                        val mono = (chunkBufferFloat[f * CHANNELS + 0] + chunkBufferFloat[f * CHANNELS + 1]) / 2.0f
+                        monoSum += mono
+                    }
+                    val mean = (monoSum / validFramesInChunk).toFloat()
+                    
+                    var monoSqSum = 0.0
+                    for (f in 0 until validFramesInChunk) {
+                        val mono = ((chunkBufferFloat[f * CHANNELS + 0] + chunkBufferFloat[f * CHANNELS + 1]) / 2.0f) - mean
+                        monoSqSum += mono * mono
+                    }
+                    val std = Math.max(1e-4, Math.sqrt(monoSqSum / validFramesInChunk)).toFloat()
+
                     val isFullRead = (isFirstChunk && actualFramesRead == CHUNK_FRAMES) || (!isFirstChunk && actualFramesRead == stepSize)
                     val framesToWrite = if (isFullRead) stepSize else validFramesInChunk
                     
-                    inputBuffer.clear()
+                    val inputName = session.inputNames.iterator().next()
+                    val expectedShape = (session.inputInfo[inputName]?.info as? ai.onnxruntime.TensorInfo)?.shape
+                    
+                    var inShape = longArrayOf(1, CHANNELS.toLong(), CHUNK_FRAMES.toLong())
+                    var inCAxis = 1
+                    var inFAxis = 2
+                    
+                    if (expectedShape != null && expectedShape.size == 3 && expectedShape[1] > 100 && expectedShape[2] == 2L) {
+                        inShape = longArrayOf(1, CHUNK_FRAMES.toLong(), CHANNELS.toLong())
+                        inFAxis = 1
+                        inCAxis = 2
+                    }
+
+                    val inStrides = LongArray(3)
+                    inStrides[2] = 1L
+                    inStrides[1] = inShape[2]
+                    inStrides[0] = inShape[1] * inShape[2]
+
+                    // Allocation using ByteBuffer.allocateDirect to avoid OnnxTensor JNI heap issues
+                    val inputBufferBytes = ByteBuffer.allocateDirect(CHANNELS * CHUNK_FRAMES * 4).order(ByteOrder.nativeOrder())
+                    val inputBufferDirect = inputBufferBytes.asFloatBuffer()
+                    
                     for (ch in 0 until CHANNELS) {
                         for (f in 0 until validFramesInChunk) {
                             val idx = ch * inStrides[inCAxis] + f * inStrides[inFAxis]
-                            inputBuffer.put(idx.toInt(), chunkBufferFloat[f * CHANNELS + ch])
+                            val rawVal = chunkBufferFloat[f * CHANNELS + ch]
+                            val normVal = (rawVal - mean) / std // APPLY NORM
+                            inputBufferDirect.put(idx.toInt(), normVal)
                         }
                     }
-                    inputBuffer.rewind()
+                    inputBufferDirect.rewind()
 
-                    val inputTensor = OnnxTensor.createTensor(env, inputBuffer, inShape)
+                    val inputTensor = OnnxTensor.createTensor(env, inputBufferDirect, inShape)
                     var result: ai.onnxruntime.OrtSession.Result? = null
                     
                     try {
@@ -255,17 +294,8 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
                         log("Chunk $chunkIndex: ONNX Inference hoàn tất.")
                         
                         val outOnnxTensor = result.get(0) as OnnxTensor
-                        val outInfo = outOnnxTensor.info as ai.onnxruntime.TensorInfo
-                        val outShape = outInfo.shape
+                        val outShape = (outOnnxTensor.info as ai.onnxruntime.TensorInfo).shape
                         
-                        if (chunkIndex == 0) {
-                            log("Output Tensor Shape: ${outShape.joinToString(", ")}")
-                            try {
-                                val memUsage = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()
-                                log("Memory usage: ${memUsage / 1024 / 1024} MB")
-                            } catch (e: Exception) {}
-                        }
-
                         var sAxis = 1
                         var cAxis = 2
                         var fAxis = 3
@@ -273,7 +303,6 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
                         if (outShape.size == 4 && outShape[2] > 100 && outShape[3] == 2L) {
                             cAxis = 3
                             fAxis = 2
-                            if (chunkIndex == 0) log("CẢNH BÁO: Model Output Shape [1, nguồn, frames, channels]. Đã tự động xoay.")
                         }
 
                         val outStrides = LongArray(outShape.size)
@@ -290,16 +319,16 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
                         if (chunkIndex == 0) {
                             try {
                                 val inputSample = FloatArray(5)
-                                for(i in 0..4) inputSample[i] = chunkBufferFloat[i * CHANNELS] // Lấy 5 mẫu đầu kênh Trái
+                                for(i in 0..4) inputSample[i] = chunkBufferFloat[i * CHANNELS]
                                 
                                 val vocSample = FloatArray(5)
                                 val drumSample = FloatArray(5)
                                 for (i in 0..4) {
                                     val vOffset = vocalIdx * outStrides[sAxis] + 0 * outStrides[cAxis] + i * outStrides[fAxis]
-                                    vocSample[i] = outBuffer.get(vOffset.toInt())
+                                    vocSample[i] = outBuffer.get(vOffset.toInt()) * std + mean
                                     
                                     val dOffset = 0 * outStrides[sAxis] + 0 * outStrides[cAxis] + i * outStrides[fAxis]
-                                    drumSample[i] = outBuffer.get(dOffset.toInt())
+                                    drumSample[i] = outBuffer.get(dOffset.toInt()) * std + mean
                                 }
 
                                 val inStr = inputSample.joinToString(", ")
@@ -331,6 +360,10 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
                                         m_val += outBuffer.get(sOffset.toInt())
                                     }
                                 }
+                                
+                                // UN-NORMALIZE
+                                v_val = v_val * std + mean
+                                m_val = m_val * std + mean
                                 
                                 // Crossfade Overlap-add
                                 if (f < overlapSize && !isFirstChunk) {
@@ -365,6 +398,10 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
                                             m_val += outBuffer.get(sOffset.toInt())
                                         }
                                     }
+                                    
+                                    // UN-NORMALIZE
+                                    v_val = v_val * std + mean
+                                    m_val = m_val * std + mean
 
                                     val rightWeight = (CHUNK_FRAMES - f).toFloat() / overlapSize
                                     v_val *= rightWeight
