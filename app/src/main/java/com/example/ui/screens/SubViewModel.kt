@@ -77,32 +77,48 @@ class SubViewModel : ViewModel() {
      */
     fun parseSrt(content: String) {
         val items = mutableListOf<SubtitleItem>()
-        // Normalize line endings and split by 2 or more newlines to handle variable formats safely
-        val text = content.replace("\r\n", "\n")
-        val blocks = text.split(Regex("\\n{2,}"))
+        val lines = content.replace("\r\n", "\n").split("\n").map { it.trim() }
+        var i = 0
         var idCounter = 1
-        for (block in blocks) {
-            if (block.trim().startsWith("WEBVTT") || block.trim().startsWith("Kind:")) continue
-            val lines = block.lines().map { it.trim() }.filter { it.isNotEmpty() }
-            if (lines.size >= 2) {
-                // Assuming format: 
-                // 1
-                // 00:00:00,000 --> 00:00:02,000
-                // Text
-                // Sometimes ID is missing if badly formatted, so we search for "-->"
-                val timeLineIdx = lines.indexOfFirst { it.contains("-->") }
-                if (timeLineIdx != -1) {
-                    val timecodes = lines[timeLineIdx].split("-->").map { it.trim() }
-                    if (timecodes.size >= 2) {
-                        val start = parseTimeMs(timecodes[0])
-                        val end = parseTimeMs(timecodes[1])
-                        
-                        val subText = lines.subList(timeLineIdx + 1, lines.size).joinToString(" ")
-                        if (start != null && end != null) {
-                            items.add(SubtitleItem(idCounter++, start, end, subText))
+        
+        while (i < lines.size) {
+            val line = lines[i]
+            if (line.isEmpty() || line.startsWith("WEBVTT") || line.startsWith("Kind:")) {
+                i++
+                continue
+            }
+            
+            // Tìm dòng Timecode
+            if (line.contains("-->")) {
+                val timecodes = line.split("-->").map { it.trim() }
+                if (timecodes.size >= 2) {
+                    val start = parseTimeMs(timecodes[0])
+                    val end = parseTimeMs(timecodes[1])
+                    i++
+                    
+                    val textBuilder = java.lang.StringBuilder()
+                    while (i < lines.size && lines[i].isNotEmpty() && !lines[i].contains("-->")) {
+                        // Bỏ qua nếu dòng text là số index của block tiếp theo
+                        // Nhưng thường số index đứng ngay trước timecode, ta bỏ qua logic phức tạp đó = cách
+                        // Nếu dòng tiếp theo (i+1) là timecode, thì dòng hiện tại có thể là index của block sau
+                        val isNextLineTimecode = i + 1 < lines.size && lines[i + 1].contains("-->")
+                        if (isNextLineTimecode && lines[i].all { it.isDigit() }) {
+                            // Đây là index của sub tiếp theo, không phải text của sub hiện tại
+                            break
                         }
+                        
+                        if (textBuilder.isNotEmpty()) textBuilder.append(" ")
+                        textBuilder.append(lines[i])
+                        i++
                     }
+                    if (start != null && end != null) {
+                        items.add(SubtitleItem(idCounter++, start, end, textBuilder.toString()))
+                    }
+                } else {
+                    i++
                 }
+            } else {
+                i++
             }
         }
         subtitleList = items
@@ -159,7 +175,20 @@ class SubViewModel : ViewModel() {
         if (tts == null) {
             tts = TextToSpeech(context) { status ->
                 if (status == TextToSpeech.SUCCESS) {
-                    tts?.language = Locale.getDefault()
+                    val locale = Locale("vi", "VN")
+                    val result = tts?.setLanguage(locale)
+                    if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                        Log.e("SubViewModel", "TTS language not supported or missing data")
+                        tts?.language = Locale.getDefault()
+                    }
+                    
+                    // Đảm bảo âm thanh TTS phát qua kệnh Media để đồng bộ âm lượng với Video
+                    val audioAttributes = android.media.AudioAttributes.Builder()
+                        .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                    tts?.setAudioAttributes(audioAttributes)
+                    
                     tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                         override fun onStart(utteranceId: String?) {
                             isSpeaking = true
@@ -176,6 +205,8 @@ class SubViewModel : ViewModel() {
                         }
                     })
                     setTtsSpeed(_state.value.ttsSpeed)
+                } else {
+                    Log.e("SubViewModel", "TTS Initialization failed!")
                 }
             }
         }

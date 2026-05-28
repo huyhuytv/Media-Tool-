@@ -129,10 +129,27 @@ fun SubScreen(navController: NavController, viewModel: SubViewModel = viewModel(
                                 if (outputFile.exists() && outputFile.length() > 0) {
                                     viewModel.finishExtraction(true, outputFile.absolutePath, "Trích xuất thành công!")
                                     
-                                    // Tự động nạp file SRT vừa trích xuất
-                                    val content = outputFile.readText()
-                                    viewModel.setSubtitle(Uri.fromFile(outputFile), outputFile.name, content)
-                                    Toast.makeText(context, "Đã trích xuất và nạp tự động phụ đề!", Toast.LENGTH_LONG).show()
+                                    // Tự động nạp file SRT vừa trích xuất với cơ chế retry và delay để đảm bảo file flush hoàn toàn
+                                    coroutineScope.launch(Dispatchers.IO) {
+                                        var content = ""
+                                        for (i in 1..5) {
+                                            kotlinx.coroutines.delay(500)
+                                            try {
+                                                content = outputFile.readText()
+                                                if (content.trim().isNotEmpty()) break
+                                            } catch (e: Exception) {
+                                                // Bỏ qua lỗi và thử lại
+                                            }
+                                        }
+                                        withContext(Dispatchers.Main) {
+                                            if (content.trim().isNotEmpty()) {
+                                                viewModel.setSubtitle(Uri.fromFile(outputFile), outputFile.name, content)
+                                                Toast.makeText(context, "Đã tự động nạp phụ đề thành công!", Toast.LENGTH_LONG).show()
+                                            } else {
+                                                Toast.makeText(context, "File trích xuất có vẻ rỗng hoặc chưa lưu kịp, vui lòng lưu và chọn lại thủ công.", Toast.LENGTH_LONG).show()
+                                            }
+                                        }
+                                    }
                                 } else {
                                     outputFile.delete()
                                     viewModel.finishExtraction(false, "", "Lỗi: Không tìm thấy phụ đề đính kèm trong Video.")
