@@ -287,6 +287,35 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
                         val sourceCount = outShape[sAxis].toInt()
                         val vocalIdx = if (sourceCount >= 4) 3 else sourceCount - 1
                         
+                        if (chunkIndex == 0) {
+                            try {
+                                val inputSample = FloatArray(5)
+                                for(i in 0..4) inputSample[i] = chunkBufferFloat[i * CHANNELS] // Lấy 5 mẫu đầu kênh Trái
+                                
+                                val vocSample = FloatArray(5)
+                                val drumSample = FloatArray(5)
+                                for (i in 0..4) {
+                                    val vOffset = vocalIdx * outStrides[sAxis] + 0 * outStrides[cAxis] + i * outStrides[fAxis]
+                                    vocSample[i] = outBuffer.get(vOffset.toInt())
+                                    
+                                    val dOffset = 0 * outStrides[sAxis] + 0 * outStrides[cAxis] + i * outStrides[fAxis]
+                                    drumSample[i] = outBuffer.get(dOffset.toInt())
+                                }
+
+                                val inStr = inputSample.joinToString(", ")
+                                val vocStr = vocSample.joinToString(", ")
+                                val drumStr = drumSample.joinToString(", ")
+                                
+                                log("==== KIỂM TRA DỮ LIỆU CHUNK ====")
+                                log("1. INPUT GỐC: $inStr")
+                                log("2. VOCAL OUT: $vocStr")
+                                log("3. DRUMS OUT: $drumStr")
+                                log("================================")
+                            } catch (e: Exception) {
+                                logError("Lỗi khi soi dữ liệu", e)
+                            }
+                        }
+
                         vocalsMerged.clear()
                         musicMerged.clear()
 
