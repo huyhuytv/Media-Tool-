@@ -65,7 +65,7 @@ fun StemScreen(
     )
 
     val saveFileLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("audio/wav"),
+        contract = ActivityResultContracts.CreateDocument("audio/mpeg"),
         onResult = { uri ->
             if (uri != null && fileToSave != null) {
                 coroutineScope.launch {
@@ -179,7 +179,7 @@ fun StemScreen(
                             onShare = { shareAudio(resultVocalsUri!!, "Chia sẻ Lời (Vocals)") },
                             onSaveClick = { 
                                 fileToSave = resultVocalsFile
-                                saveFileLauncher.launch("Vocals_${System.currentTimeMillis()}.wav") 
+                                saveFileLauncher.launch("Vocals_${System.currentTimeMillis()}.mp3") 
                             }
                         )
                         AudioPreviewCard(
@@ -189,7 +189,7 @@ fun StemScreen(
                             onShare = { shareAudio(resultMusicUri!!, "Chia sẻ Nhạc (Beat)") },
                             onSaveClick = {
                                 fileToSave = resultMusicFile
-                                saveFileLauncher.launch("Beat_${System.currentTimeMillis()}.wav")
+                                saveFileLauncher.launch("Beat_${System.currentTimeMillis()}.mp3")
                             }
                         )
                         Spacer(modifier = Modifier.height(16.dp))

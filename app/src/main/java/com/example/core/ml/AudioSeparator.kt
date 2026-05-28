@@ -22,6 +22,7 @@ import java.io.FileOutputStream
 import java.io.FileWriter
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.FloatBuffer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -148,6 +149,31 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
                 val vocalsMerged = ByteBuffer.allocate(CHUNK_FRAMES * BYTES_PER_FRAME).order(ByteOrder.LITTLE_ENDIAN)
                 val musicMerged = ByteBuffer.allocate(CHUNK_FRAMES * BYTES_PER_FRAME).order(ByteOrder.LITTLE_ENDIAN)
 
+                val inputName = session.inputNames.iterator().next()
+                val inInfo = session.inputInfo[inputName]?.info as? ai.onnxruntime.TensorInfo
+                val expectedShape = inInfo?.shape
+                
+                log("Input Expected Shape: ${expectedShape?.joinToString(", ") ?: "Unknown"}")
+                
+                var inShape = longArrayOf(1, CHANNELS.toLong(), CHUNK_FRAMES.toLong())
+                var inCAxis = 1
+                var inFAxis = 2
+                
+                if (expectedShape != null && expectedShape.size == 3 && expectedShape[1] > 100 && expectedShape[2] == 2L) {
+                    inShape = longArrayOf(1, CHUNK_FRAMES.toLong(), CHANNELS.toLong())
+                    inFAxis = 1
+                    inCAxis = 2
+                    log("CẢNH BÁO: Model Input Shape [1, frames, channels]. Đã tự xoay trục.")
+                }
+
+                val inStrides = LongArray(3)
+                inStrides[2] = 1L
+                inStrides[1] = inShape[2]
+                inStrides[0] = inShape[1] * inShape[2]
+
+                // Tái sử dụng Buffer để giảm GC Overhead & cấp phát RAM liên tục
+                val inputBuffer = FloatBuffer.allocate(CHANNELS * CHUNK_FRAMES)
+
                 var isFirstChunk = true
                 var chunkIndex = 0
 
@@ -205,88 +231,126 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
                     }
 
                     val validFramesInChunk = if (isFirstChunk) actualFramesRead else (overlapSize + actualFramesRead)
-                    
-                    // Tạo Tensor Planar (tách biệt Left, Right)
-                    val inputArray = Array(1) { Array(CHANNELS) { FloatArray(CHUNK_FRAMES) } }
-                    for (ch in 0 until CHANNELS) {
-                        for (f in 0 until validFramesInChunk) {
-                            inputArray[0][ch][f] = chunkBufferFloat[f * CHANNELS + ch]
-                        }
-                        // Zero padding nếu rỗng
-                        for (f in validFramesInChunk until CHUNK_FRAMES) {
-                            inputArray[0][ch][f] = 0f
-                        }
-                    }
-
-                    val inputTensor = OnnxTensor.createTensor(env, inputArray)
-                    val inputName = session.inputNames.iterator().next()
-                    val inputMap = mapOf(inputName to inputTensor)
-
-                    // Inference
-                    log("Chunk $chunkIndex: Bắt đầu Inference ONNX...")
-                    val result = session.run(inputMap)
-                    log("Chunk $chunkIndex: ONNX Inference hoàn tất.")
-                    
-                    val outputTensor = result.get(0).value as Array<*> // [1][4][2][frames]
-                    val batchOut = outputTensor[0] as Array<*> // [4][2][frames]
-
-                    // Lấy các phân đoạn
-                    val drums = batchOut[0] as Array<FloatArray>
-                    val bass = batchOut[1] as Array<FloatArray>
-                    val other = batchOut[2] as Array<FloatArray>
-                    val vocals = batchOut[3] as Array<FloatArray>
-                    
                     val isFullRead = (isFirstChunk && actualFramesRead == CHUNK_FRAMES) || (!isFirstChunk && actualFramesRead == stepSize)
                     val framesToWrite = if (isFullRead) stepSize else validFramesInChunk
-
-                    vocalsMerged.clear()
-                    musicMerged.clear()
-
-                    for (f in 0 until framesToWrite) {
-                        for (ch in 0 until CHANNELS) {
-                            var v_val = vocals[ch][f]
-                            var m_val = drums[ch][f] + bass[ch][f] + other[ch][f]
-                            
-                            // Crossfade Overlap-add
-                            if (f < overlapSize && !isFirstChunk) {
-                                val weight = f.toFloat() / overlapSize
-                                v_val = v_val * weight + outVocalsOverlap[f * CHANNELS + ch]
-                                m_val = m_val * weight + outBeatOverlap[f * CHANNELS + ch]
-                            }
-
-                            // Chuyển về Int16 Interleaved
-                            val vShort = (v_val * 32768.0f).toInt().coerceIn(-32768, 32767).toShort()
-                            val mShort = (m_val * 32768.0f).toInt().coerceIn(-32768, 32767).toShort()
-                            
-                            vocalsMerged.putShort(vShort)
-                            musicMerged.putShort(mShort)
-                        }
-                    }
-
-                    vocalsOut.write(vocalsMerged.array(), 0, framesToWrite * BYTES_PER_FRAME)
-                    musicOut.write(musicMerged.array(), 0, framesToWrite * BYTES_PER_FRAME)
-                    log("Chunk $chunkIndex: Ghi $framesToWrite frames ra file.")
                     
-                    // Lưu Overlap cho chunk kế tiếp
-                    if (isFullRead) {
-                        for (f in framesToWrite until CHUNK_FRAMES) {
-                            for (ch in 0 until CHANNELS) {
-                                var v_val = vocals[ch][f]
-                                var m_val = drums[ch][f] + bass[ch][f] + other[ch][f]
-
-                                val rightWeight = (CHUNK_FRAMES - f).toFloat() / overlapSize
-                                v_val *= rightWeight
-                                m_val *= rightWeight
-
-                                val overIdx = f - framesToWrite
-                                outVocalsOverlap[overIdx * CHANNELS + ch] = v_val
-                                outBeatOverlap[overIdx * CHANNELS + ch] = m_val
-                            }
+                    inputBuffer.clear()
+                    for (ch in 0 until CHANNELS) {
+                        for (f in 0 until validFramesInChunk) {
+                            val idx = ch * inStrides[inCAxis] + f * inStrides[inFAxis]
+                            inputBuffer.put(idx.toInt(), chunkBufferFloat[f * CHANNELS + ch])
                         }
                     }
+                    inputBuffer.rewind()
 
-                    inputTensor.close()
-                    result.close()
+                    val inputTensor = OnnxTensor.createTensor(env, inputBuffer, inShape)
+                    var result: ai.onnxruntime.OrtSession.Result? = null
+                    
+                    try {
+                        val inputMap = mapOf(inputName to inputTensor)
+
+                        // Inference
+                        log("Chunk $chunkIndex: Bắt đầu Inference ONNX...")
+                        result = session.run(inputMap)
+                        log("Chunk $chunkIndex: ONNX Inference hoàn tất.")
+                        
+                        val outOnnxTensor = result.get(0) as OnnxTensor
+                        val outInfo = outOnnxTensor.info as ai.onnxruntime.TensorInfo
+                        val outShape = outInfo.shape
+                        
+                        if (chunkIndex == 0) {
+                            log("Output Tensor Shape: ${outShape.joinToString(", ")}")
+                            try {
+                                val memUsage = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()
+                                log("Memory usage: ${memUsage / 1024 / 1024} MB")
+                            } catch (e: Exception) {}
+                        }
+
+                        var sAxis = 1
+                        var cAxis = 2
+                        var fAxis = 3
+                        
+                        if (outShape.size == 4 && outShape[2] > 100 && outShape[3] == 2L) {
+                            cAxis = 3
+                            fAxis = 2
+                            if (chunkIndex == 0) log("CẢNH BÁO: Model Output Shape [1, nguồn, frames, channels]. Đã tự động xoay.")
+                        }
+
+                        val outStrides = LongArray(outShape.size)
+                        var currentStr = 1L
+                        for(i in outShape.indices.reversed()) {
+                            outStrides[i] = currentStr
+                            currentStr *= outShape[i]
+                        }
+
+                        val outBuffer = outOnnxTensor.floatBuffer
+                        val sourceCount = outShape[sAxis].toInt()
+                        val vocalIdx = if (sourceCount >= 4) 3 else sourceCount - 1
+                        
+                        vocalsMerged.clear()
+                        musicMerged.clear()
+
+                        for (f in 0 until framesToWrite) {
+                            for (ch in 0 until CHANNELS) {
+                                val vOffset = vocalIdx * outStrides[sAxis] + ch * outStrides[cAxis] + f * outStrides[fAxis]
+                                var v_val = outBuffer.get(vOffset.toInt())
+                                var m_val = 0f
+                                
+                                for (s in 0 until sourceCount) {
+                                    if (s != vocalIdx) {
+                                        val sOffset = s * outStrides[sAxis] + ch * outStrides[cAxis] + f * outStrides[fAxis]
+                                        m_val += outBuffer.get(sOffset.toInt())
+                                    }
+                                }
+                                
+                                // Crossfade Overlap-add
+                                if (f < overlapSize && !isFirstChunk) {
+                                    val weight = f.toFloat() / overlapSize
+                                    v_val = v_val * weight + outVocalsOverlap[f * CHANNELS + ch]
+                                    m_val = m_val * weight + outBeatOverlap[f * CHANNELS + ch]
+                                }
+
+                                // Chuyển về Int16 Interleaved
+                                val vShort = (v_val * 32768.0f).toInt().coerceIn(-32768, 32767).toShort()
+                                val mShort = (m_val * 32768.0f).toInt().coerceIn(-32768, 32767).toShort()
+                                
+                                vocalsMerged.putShort(vShort)
+                                musicMerged.putShort(mShort)
+                            }
+                        }
+
+                        vocalsOut.write(vocalsMerged.array(), 0, framesToWrite * BYTES_PER_FRAME)
+                        musicOut.write(musicMerged.array(), 0, framesToWrite * BYTES_PER_FRAME)
+                        log("Chunk $chunkIndex: Ghi $framesToWrite frames ra file.")
+                        
+                        // Lưu Overlap cho chunk kế tiếp
+                        if (isFullRead) {
+                            for (f in framesToWrite until CHUNK_FRAMES) {
+                                for (ch in 0 until CHANNELS) {
+                                    val vOffset = vocalIdx * outStrides[sAxis] + ch * outStrides[cAxis] + f * outStrides[fAxis]
+                                    var v_val = outBuffer.get(vOffset.toInt())
+                                    var m_val = 0f
+                                    for (s in 0 until sourceCount) {
+                                        if (s != vocalIdx) {
+                                            val sOffset = s * outStrides[sAxis] + ch * outStrides[cAxis] + f * outStrides[fAxis]
+                                            m_val += outBuffer.get(sOffset.toInt())
+                                        }
+                                    }
+
+                                    val rightWeight = (CHUNK_FRAMES - f).toFloat() / overlapSize
+                                    v_val *= rightWeight
+                                    m_val *= rightWeight
+
+                                    val overIdx = f - framesToWrite
+                                    outVocalsOverlap[overIdx * CHANNELS + ch] = v_val
+                                    outBeatOverlap[overIdx * CHANNELS + ch] = m_val
+                                }
+                            }
+                        }
+                    } finally {
+                        result?.close()
+                        inputTensor.close()
+                    }
 
                     processedFrames += actualFramesRead
                     val progressRatio = if (totalFrames > 0) processedFrames.toFloat() / totalFrames.toFloat() else 1.0f
@@ -295,17 +359,22 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
                     
                     isFirstChunk = false
                     chunkIndex++
+                    
+                    if (!isFullRead) {
+                        log("Hoàn tất duyệt file ở frame cuối cùng.")
+                        break
+                    }
                 }
 
                 inputStream.close()
                 vocalsOut.close()
                 musicOut.close()
-                session.close()
 
             } catch (e: Exception) {
-                session.close()
                 logError("Lỗi khi tách: ${e.message}", e)
                 throw Exception("Lỗi khi xử lý mô hình AI: ${e.message}", e)
+            } finally {
+                session.close()
             }
 
             emit(SeparationState.Progress(0.9f)) // Encoding 
