@@ -173,7 +173,7 @@ fun Img2VidScreen(navController: NavController) {
     
                 val command = if (copiedImages.size == 1) {
                     val imgPath = copiedImages.first().absolutePath
-                    "-y -loop 1 -framerate 1 -i \"$imgPath\" -i \"$audioPath\" -vf \"$scaleFilter\" -c:v libx264 $vPreset $vBitrate -tune stillimage $aCodec $aBitrate -pix_fmt yuv420p -shortest \"${outputFile.absolutePath}\""
+                    "-y -loop 1 -framerate 1 -i \"$imgPath\" -i \"$audioPath\" -map 0:v:0 -map 1:a:0 -vf \"$scaleFilter\" -c:v libx264 $vPreset $vBitrate -tune stillimage $aCodec $aBitrate -pix_fmt yuv420p -shortest \"${outputFile.absolutePath}\""
                 } else {
                     val concatFile = File(context.cacheDir, "img_concat.txt")
                     val writer = FileWriter(concatFile)
@@ -187,7 +187,7 @@ fun Img2VidScreen(navController: NavController) {
                     writer.write("file '${copiedImages.last().absolutePath.replace("'", "'\\''")}'\n")
                     writer.close()
                     
-                    "-y -f concat -safe 0 -i \"${concatFile.absolutePath}\" -i \"$audioPath\" -vf \"$scaleFilter\" -c:v libx264 $vPreset $vBitrate -tune stillimage $aCodec $aBitrate -pix_fmt yuv420p -shortest \"${outputFile.absolutePath}\""
+                    "-y -f concat -safe 0 -i \"${concatFile.absolutePath}\" -i \"$audioPath\" -map 0:v:0 -map 1:a:0 -vf \"$scaleFilter\" -c:v libx264 $vPreset $vBitrate -tune stillimage $aCodec $aBitrate -pix_fmt yuv420p -shortest \"${outputFile.absolutePath}\""
                 }
                 
                 mediaEngine.executeFFmpegCommand(command).collect { state ->

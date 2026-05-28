@@ -296,11 +296,26 @@ fun OtherScreen(navController: NavController) {
                 
                 fun getEnable(start: String, end: String): String {
                     if (!enableTimeMocks) return ""
-                    val s = start.toDoubleOrNull()?.div(1000.0)
-                    val e = end.toDoubleOrNull()?.div(1000.0)
-                    if (s != null && e != null && e > s) return ":enable='between(t,$s,$e)'"
-                    if (s != null && s > 0) return ":enable='gte(t,$s)'"
-                    return ""
+                    
+                    val startTokens = start.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                    val endTokens = end.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+
+                    if (startTokens.isEmpty()) return ""
+
+                    val conditions = mutableListOf<String>()
+                    for (i in startTokens.indices) {
+                        val s = startTokens[i].toDoubleOrNull()?.div(1000.0) ?: continue
+                        val e = endTokens.getOrNull(i)?.toDoubleOrNull()?.div(1000.0)
+
+                        if (e != null && e > s) {
+                            conditions.add("between(t,$s,$e)")
+                        } else if (e == null || e == 0.0) {
+                            conditions.add("gte(t,$s)")
+                        }
+                    }
+
+                    if (conditions.isEmpty()) return ""
+                    return ":enable='${conditions.joinToString("+")}'"
                 }
                 
                 if (enableNorm) {
@@ -579,8 +594,8 @@ fun OtherScreen(navController: NavController) {
                 fun TimeBlock(startMs: String, onStartChange: (String) -> Unit, endMs: String, onEndChange: (String) -> Unit, effectName: String) {
                     if (enableTimeMocks) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                            OutlinedTextField(value = startMs, onValueChange = onStartChange, modifier = Modifier.weight(1f), label = { Text("Từ $effectName (ms)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-                            OutlinedTextField(value = endMs, onValueChange = onEndChange, modifier = Modifier.weight(1f), label = { Text("Đến $effectName (ms)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                            OutlinedTextField(value = startMs, onValueChange = onStartChange, modifier = Modifier.weight(1f), label = { Text("Từ $effectName (ms, vd: 0, 50000)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text))
+                            OutlinedTextField(value = endMs, onValueChange = onEndChange, modifier = Modifier.weight(1f), label = { Text("Đến $effectName (ms, vd: 10000, 60000)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text))
                         }
                         Spacer(modifier = Modifier.height(4.dp))
                     }

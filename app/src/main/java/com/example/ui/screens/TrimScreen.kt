@@ -84,16 +84,29 @@ fun TrimScreen(navController: NavController) {
         }
     }
     
-    fun getSeconds(msString: String): Double {
-        return msString.toLongOrNull()?.let { it / 1000.0 } ?: 0.0
-    }
-
     fun startTrim() {
         if (selectedUri == null) {
             Toast.makeText(context, "Vui lòng chọn file", Toast.LENGTH_SHORT).show()
             return
         }
         
+        val stTokens = if (startMs.isBlank()) listOf("0") else startMs.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+        val enTokens = if (endMs.isBlank()) listOf("0") else endMs.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+        
+        val segments = mutableListOf<Pair<Double, Double>>()
+        for (i in stTokens.indices) {
+            val s = stTokens[i].toLongOrNull()?.let { it / 1000.0 } ?: 0.0
+            val e = enTokens.getOrNull(i)?.toLongOrNull()?.let { it / 1000.0 } ?: 0.0
+            if (e in 0.001..s) {
+                Toast.makeText(context, "Mốc kết thúc đoạn ${i+1} phải lớn hơn bắt đầu", Toast.LENGTH_SHORT).show()
+                return
+            }
+            segments.add(Pair(s, e))
+        }
+        if (segments.isEmpty()) {
+            segments.add(Pair(0.0, 0.0))
+        }
+
         isProcessing = true
         progressMsg = "Đang chuẩn bị..."
         hasOutput = false
@@ -101,18 +114,6 @@ fun TrimScreen(navController: NavController) {
         coroutineScope.launch(Dispatchers.IO) {
             try {
                 val uri = selectedUri!!
-                
-                val startSec = getSeconds(startMs)
-                val endSec = getSeconds(endMs)
-                
-                if (endSec <= startSec && endSec > 0.0) {
-                    withContext(Dispatchers.Main) {
-                        Toast.makeText(context, "Mốc kết thúc phải lớn hơn bắt đầu", Toast.LENGTH_SHORT).show()
-                        isProcessing = false
-                    }
-                    return@launch
-                }
-                
                 val safPath = mediaEngine.getSafParameter(uri)
                 if (safPath == null) {
                     withContext(Dispatchers.Main) {
@@ -138,9 +139,6 @@ fun TrimScreen(navController: NavController) {
                 }
                 val outputFile = File(outputDir, "trimmed_${System.currentTimeMillis()}.$ext")
                 
-                val duration = if (endSec > 0.0) endSec - startSec else 0.0
-                val durationArg = if (duration > 0.0) "-t $duration" else ""
-                              
                 val codecArg = if (isAudio) {
                     val baseCodec = if (com.example.core.SettingsManager.isAudioLossless(context)) {
                         "-c copy" 
@@ -158,38 +156,92 @@ fun TrimScreen(navController: NavController) {
                     "-c copy"
                 }
                 
-                val command = "-y -ss $startSec -i \"$safPath\" $durationArg $codecArg \"${outputFile.absolutePath}\""
+                val tempFiles = mutableListOf<File>()
                 
-                mediaEngine.executeFFmpegCommand(command).collect { state ->
-                    withContext(Dispatchers.Main) {
-                        when (state) {
-                            is MediaEngine.ExecutionState.Connecting -> {
-                                progressMsg = "Đang kết nối..."
-                            }
-                            is MediaEngine.ExecutionState.Progress -> {
-                                progressMsg = "Đang cắt: ${state.timeInMilliseconds}ms"
-                            }
-                            is MediaEngine.ExecutionState.Success -> {
-                                progressMsg = "Cắt thành công!"
-                                isProcessing = false
-                                hasOutput = true
-                                outputPath = outputFile.absolutePath
-                                Toast.makeText(context, "Cắt thành công!", Toast.LENGTH_SHORT).show()
-                            }
-                            is MediaEngine.ExecutionState.Error -> {
-                                progressMsg = "Lỗi: ${state.returnCode} - ${state.failStackTrace ?: "Unknown error"}"
-                                isProcessing = false
-                                Toast.makeText(context, "Lỗi cắt file! Xem thông báo trên màn hình", Toast.LENGTH_LONG).show()
+                for ((index, segment) in segments.withIndex()) {
+                    val (startSec, endSec) = segment
+                    val duration = if (endSec > 0.0) endSec - startSec else 0.0
+                    val durationArg = if (duration > 0.0) "-t $duration" else ""
+                    
+                    val tempExt = if (isAudio && codecArg == "-c copy") {
+                       ext
+                    } else if (!isAudio) {
+                       "mp4" // standard video intermediate
+                    } else {
+                       ext
+                    }
+                    
+                    val tempFile = File(outputDir, "temp_part_${index}_${System.currentTimeMillis()}.$tempExt")
+                    
+                    val command = "-y -ss $startSec -i \"$safPath\" $durationArg $codecArg \"${tempFile.absolutePath}\""
+                    
+                    var success = false
+                    mediaEngine.executeFFmpegCommand(command).collect { state ->
+                        withContext(Dispatchers.Main) {
+                            when (state) {
+                                is MediaEngine.ExecutionState.Progress -> {
+                                    progressMsg = "Đang cắt đoạn ${index+1}/${segments.size}..."
+                                }
+                                is MediaEngine.ExecutionState.Success -> {
+                                    success = true
+                                }
+                                is MediaEngine.ExecutionState.Error -> {
+                                    progressMsg = "Lỗi đoạn ${index+1}: ${state.returnCode}"
+                                }
+                                else -> {}
                             }
                         }
                     }
+                    if (success) {
+                        tempFiles.add(tempFile)
+                    } else {
+                        throw Exception("Lỗi khi cắt đoạn ${index+1}")
+                    }
                 }
+                
+                if (tempFiles.size == 1) {
+                    tempFiles[0].renameTo(outputFile)
+                    withContext(Dispatchers.Main) {
+                        progressMsg = "Xử lý thành công!"
+                        isProcessing = false
+                        hasOutput = true
+                        outputPath = outputFile.absolutePath
+                    }
+                } else if (tempFiles.size > 1) {
+                    withContext(Dispatchers.Main) { progressMsg = "Đang nối ${tempFiles.size} đoạn..." }
+                    val listFile = File(outputDir, "concat_list_${System.currentTimeMillis()}.txt")
+                    listFile.writeText(tempFiles.joinToString("\n") { "file '${it.absolutePath}'" })
+                    
+                    val concatCmd = "-y -f concat -safe 0 -i \"${listFile.absolutePath}\" -c copy \"${outputFile.absolutePath}\""
+                    var concatSuccess = false
+                    mediaEngine.executeFFmpegCommand(concatCmd).collect { state ->
+                        withContext(Dispatchers.Main) {
+                            when (state) {
+                                is MediaEngine.ExecutionState.Progress -> { progressMsg = "Đang nối các đoạn..." }
+                                is MediaEngine.ExecutionState.Success -> { concatSuccess = true }
+                                is MediaEngine.ExecutionState.Error -> { progressMsg = "Lỗi khi nối: ${state.returnCode}" }
+                                else -> {}
+                            }
+                        }
+                    }
+                    if (concatSuccess) {
+                        withContext(Dispatchers.Main) {
+                            progressMsg = "Xử lý thành công!"
+                            isProcessing = false
+                            hasOutput = true
+                            outputPath = outputFile.absolutePath
+                        }
+                    } else {
+                        throw Exception("Lỗi khi ghép các đoạn")
+                    }
+                }
+
             } catch (e: Throwable) {
                 val causeStr = generateSequence(e) { it.cause }.joinToString(" -> ") { it.toString() }
                 withContext(Dispatchers.Main) {
                     progressMsg = "Ngoại lệ: $causeStr"
                     isProcessing = false
-                    Toast.makeText(context, "Lỗi Coroutine: $causeStr", Toast.LENGTH_LONG).show()
+                    Toast.makeText(context, "Lỗi: $causeStr", Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -229,15 +281,18 @@ fun TrimScreen(navController: NavController) {
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         OutlinedTextField(
                             value = startMs,
-                            onValueChange = { startMs = it.filter { char -> char.isDigit() } },
+                            onValueChange = { startMs = it.filter { char -> char.isDigit() || char == ',' || char == ' ' } },
                             modifier = Modifier.weight(1f),
-                            label = { Text("Mốc bắt đầu (ms)") },
-                            placeholder = { Text("0") },
+                            label = { Text("Bắt đầu (ms, VD: 0, 5000)") },
+                            placeholder = { Text("0, 5000") },
                             singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next)
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Next)
                         )
                         Button(onClick = { 
-                            exoPlayer?.let { player -> startMs = player.currentPosition.toString() }
+                            exoPlayer?.let { player -> 
+                                val curr = player.currentPosition.toString()
+                                startMs = if (startMs.isBlank()) curr else "$startMs, $curr"
+                            }
                         }, modifier = Modifier.semantics { contentDescription = "Lấy mốc thời gian bắt đầu đang phát trên trình phát video" }) {
                             Text("Lấy mốc hiện tại")
                         }
@@ -246,15 +301,18 @@ fun TrimScreen(navController: NavController) {
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         OutlinedTextField(
                             value = endMs,
-                            onValueChange = { endMs = it.filter { char -> char.isDigit() } },
+                            onValueChange = { endMs = it.filter { char -> char.isDigit() || char == ',' || char == ' ' } },
                             modifier = Modifier.weight(1f),
-                            label = { Text("Mốc kết thúc (ms, để 0 lấy đến hết)") },
-                            placeholder = { Text("0") },
+                            label = { Text("Kết thúc (VD: 3000, 0)") },
+                            placeholder = { Text("3000, 0") },
                             singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done)
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Done)
                         )
                         Button(onClick = {
-                            exoPlayer?.let { player -> endMs = player.currentPosition.toString() }
+                            exoPlayer?.let { player -> 
+                                val curr = player.currentPosition.toString()
+                                endMs = if (endMs.isBlank()) curr else "$endMs, $curr"
+                            }
                         }, modifier = Modifier.semantics { contentDescription = "Lấy mốc thời gian kết thúc đang phát trên trình phát video" }) {
                             Text("Lấy mốc hiện tại")
                         }

@@ -79,66 +79,112 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
             try {
                 val totalBytes = tempRawMix.length()
                 val totalFrames = totalBytes / BYTES_PER_FRAME
+                
+                // 3.1 COMPUTE GLOBAL MEAN AND STD (Single pass fast computation)
+                emit(SeparationState.Progress(0.12f))
+                var globalMonoSum = 0.0
+                var globalMonoVarSum = 0.0
+                var globalFramesCount = 0L
+                DataInputStream(FileInputStream(tempRawMix)).use { statStream ->
+                    val statBuf = ByteArray(8192 * BYTES_PER_FRAME)
+                    while (true) {
+                        val read = statStream.read(statBuf)
+                        if (read <= 0) break
+                        val framesReadStat = read / BYTES_PER_FRAME
+                        val fbuf = ByteBuffer.wrap(statBuf, 0, read).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
+                        for (i in 0 until framesReadStat) {
+                            val mono = (fbuf.get(i * CHANNELS + 0) + fbuf.get(i * CHANNELS + 1)) / 2.0
+                            globalMonoSum += mono
+                            globalMonoVarSum += mono * mono
+                        }
+                        globalFramesCount += framesReadStat
+                    }
+                }
+                
+                val globalMean = if (globalFramesCount > 0) globalMonoSum / globalFramesCount else 0.0
+                var globalVariance = if (globalFramesCount > 0) (globalMonoVarSum / globalFramesCount) - (globalMean * globalMean) else 1.0
+                if (globalVariance < 0) globalVariance = 0.0
+                val stdF = Math.sqrt(globalVariance).toFloat()
+                val meanF = globalMean.toFloat()
+
                 var processedFrames = 0L
 
                 val inputStream = DataInputStream(FileInputStream(tempRawMix))
                 val vocalsOut = DataOutputStream(FileOutputStream(tempRawVocals))
                 val musicOut = DataOutputStream(FileOutputStream(tempRawMusic))
 
-                // Buffer for reading interleaved floats
-                val inputBufferBytes = ByteArray(CHUNK_FRAMES * BYTES_PER_FRAME)
-                val tensorBuffer = FloatBuffer.allocate(CHANNELS * CHUNK_FRAMES)
+                // Sửa lỗi #2: Thêm thông số gối (Overlap) để không bị đứt quãng (Crossfade 25%)
+                val overlapSize = (CHUNK_FRAMES * 0.25f).toInt()
+                val stepSize = CHUNK_FRAMES - overlapSize
+
+                val chunkBufferBytes = ByteArray(CHUNK_FRAMES * BYTES_PER_FRAME)
+                val chunkBuffer = FloatArray(CHUNK_FRAMES * CHANNELS)
                 
-                // Pre-allocate buffers for merged output to prevent OutOfMemory/GC thrashing in loop
+                // Buffer lưu các đoạn âm thanh nối (Overlap)
+                val outVocalsOverlap = FloatArray(overlapSize * CHANNELS)
+                val outMusicOverlap = FloatArray(overlapSize * CHANNELS)
+
                 val vocalsMerged = ByteBuffer.allocate(CHUNK_FRAMES * BYTES_PER_FRAME).order(ByteOrder.LITTLE_ENDIAN)
                 val musicMerged = ByteBuffer.allocate(CHUNK_FRAMES * BYTES_PER_FRAME).order(ByteOrder.LITTLE_ENDIAN)
+                
+                val tensorBuffer = FloatBuffer.allocate(CHANNELS * CHUNK_FRAMES)
+
+                var isFirstChunk = true
 
                 while (coroutineContext.isActive) {
-                    // Read a chunk
+                    val framesToRead = if (isFirstChunk) CHUNK_FRAMES else stepSize
+                    val bytesToRead = framesToRead * BYTES_PER_FRAME
+                    
                     var bytesRead = 0
-                    while (bytesRead < inputBufferBytes.size) {
-                        val read = inputStream.read(inputBufferBytes, bytesRead, inputBufferBytes.size - bytesRead)
+                    while (bytesRead < bytesToRead) {
+                        val read = inputStream.read(chunkBufferBytes, bytesRead, bytesToRead - bytesRead)
                         if (read == -1) break
                         bytesRead += read
                     }
+                    
+                    val actualFramesRead = bytesRead / BYTES_PER_FRAME
 
-                    if (bytesRead == 0) break
+                    if (actualFramesRead == 0 && !isFirstChunk) {
+                        // EOF: Xả nốt đoạn overlap cuối cùng
+                        vocalsMerged.clear()
+                        musicMerged.clear()
+                        for(i in 0 until overlapSize * CHANNELS) {
+                            vocalsMerged.putFloat(outVocalsOverlap[i])
+                            musicMerged.putFloat(outMusicOverlap[i])
+                        }
+                        vocalsOut.write(vocalsMerged.array(), 0, overlapSize * BYTES_PER_FRAME)
+                        musicOut.write(musicMerged.array(), 0, overlapSize * BYTES_PER_FRAME)
+                        break
+                    }
+                    if (actualFramesRead == 0 && isFirstChunk) break // File rỗng
 
-                    val framesRead = bytesRead / BYTES_PER_FRAME
-                    val floatBuffer = ByteBuffer.wrap(inputBufferBytes, 0, bytesRead)
+                    if (!isFirstChunk) {
+                        // Dịch dữ liệu cũ sang trái
+                        System.arraycopy(chunkBuffer, stepSize * CHANNELS, chunkBuffer, 0, overlapSize * CHANNELS)
+                    }
+
+                    val floatBuffer = ByteBuffer.wrap(chunkBufferBytes, 0, bytesRead)
                         .order(ByteOrder.LITTLE_ENDIAN)
                         .asFloatBuffer()
 
-                    // Calculate mean and std for the valid portion to normalize
-                    var monoSum = 0.0
-                    for (f in 0 until framesRead) {
-                        monoSum += (floatBuffer.get(f * CHANNELS + 0) + floatBuffer.get(f * CHANNELS + 1)) / 2.0
+                    val offset = if (isFirstChunk) 0 else overlapSize * CHANNELS
+                    for (i in 0 until actualFramesRead * CHANNELS) {
+                        chunkBuffer[offset + i] = floatBuffer.get(i)
                     }
-                    val meanMono = monoSum / framesRead
 
-                    var varianceSum = 0.0
-                    for (f in 0 until framesRead) {
-                        val mono = (floatBuffer.get(f * CHANNELS + 0) + floatBuffer.get(f * CHANNELS + 1)) / 2.0
-                        val diff = mono - meanMono
-                        varianceSum += diff * diff
-                    }
-                    val stdMono = if (framesRead > 1) {
-                        Math.sqrt(varianceSum / (framesRead - 1)).toFloat()
-                    } else {
-                        1f
-                    }
-                    val meanF = meanMono.toFloat()
-
-                    // De-interleave and normalize: L, R, L, R -> LLLL..., RRRR... with fixed chunk size
+                    val validFramesInChunk = if (isFirstChunk) actualFramesRead else (overlapSize + actualFramesRead)
+                    
+                    // Chuẩn hóa và làm phẳng sang Tensor
                     tensorBuffer.clear()
-                    for (i in 0 until CHANNELS * CHUNK_FRAMES) {
-                        tensorBuffer.put(i, 0f) // Fill padded region with 0
-                    }
                     for (ch in 0 until CHANNELS) {
-                        for (f in 0 until framesRead) {
-                            val originalVal = floatBuffer.get(f * CHANNELS + ch)
-                            val normalizedVal = (originalVal - meanF) / (stdMono + 1e-5f)
+                        for (f in 0 until validFramesInChunk) {
+                            val originalVal = chunkBuffer[f * CHANNELS + ch]
+                            val normalizedVal = (originalVal - meanF) / (stdF + 1e-5f)
                             tensorBuffer.put(ch * CHUNK_FRAMES + f, normalizedVal)
+                        }
+                        // Zero padding nếu file bị thiếu
+                        for (f in validFramesInChunk until CHUNK_FRAMES) {
+                            tensorBuffer.put(ch * CHUNK_FRAMES + f, 0f)
                         }
                     }
 
@@ -161,38 +207,65 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
                     val bass = batchOut[1] as Array<FloatArray>
                     val other = batchOut[2] as Array<FloatArray>
                     val vocals = batchOut[3] as Array<FloatArray>
+                    
+                    val isFullRead = (isFirstChunk && actualFramesRead == CHUNK_FRAMES) || (!isFirstChunk && actualFramesRead == stepSize)
+                    val framesToWrite = if (isFullRead) stepSize else validFramesInChunk
 
                     vocalsMerged.clear()
                     musicMerged.clear()
 
-                    for (f in 0 until framesRead) {
+                    for (f in 0 until framesToWrite) {
                         for (ch in 0 until CHANNELS) {
-                            // Un-normalize the output from the model using the chunk's std and mean
-                            val d = drums[ch][f] * stdMono + meanF
-                            val b = bass[ch][f] * stdMono + meanF
-                            val o = other[ch][f] * stdMono + meanF
-                            val v = vocals[ch][f] * stdMono + meanF
-
-                            val m = d + b + o
+                            // Un-normalize the output từ mô hình.
+                            // FIX ERROR 4 & 5: Dùng công thức đúng. Tránh cộng Mean quá nhiều lần!
+                            var m_val = (drums[ch][f] + bass[ch][f] + other[ch][f]) * stdF + meanF
+                            var v_val = vocals[ch][f] * stdF + meanF
                             
-                            // Clip the outputs to [-1.0, 1.0] to prevent any chance of MP3 encoding distortion (méo tiếng)
-                            val vClipped = v.coerceIn(-1.0f, 1.0f)
-                            val mClipped = m.coerceIn(-1.0f, 1.0f)
+                            // FIX ERROR 2: Crossfade Overlap-add để chống méo đoạn nối
+                            if (f < overlapSize && !isFirstChunk) {
+                                val weight = f.toFloat() / overlapSize
+                                m_val = m_val * weight + outMusicOverlap[f * CHANNELS + ch]
+                                v_val = v_val * weight + outVocalsOverlap[f * CHANNELS + ch]
+                            }
+
+                            // FIX ERROR 3: Soft Clipping (Tanh) chống san phẳng gai âm thanh, giảm méo điện tử
+                            val vClipped = kotlin.math.tanh(v_val.toDouble()).toFloat()
+                            val mClipped = kotlin.math.tanh(m_val.toDouble()).toFloat()
                             
                             vocalsMerged.putFloat(vClipped)
                             musicMerged.putFloat(mClipped)
                         }
                     }
 
-                    vocalsOut.write(vocalsMerged.array(), 0, framesRead * BYTES_PER_FRAME)
-                    musicOut.write(musicMerged.array(), 0, framesRead * BYTES_PER_FRAME)
+                    vocalsOut.write(vocalsMerged.array(), 0, framesToWrite * BYTES_PER_FRAME)
+                    musicOut.write(musicMerged.array(), 0, framesToWrite * BYTES_PER_FRAME)
+                    
+                    // Lưu vùng chéo Overlap cho phần sau
+                    if (isFullRead) {
+                        for (f in framesToWrite until CHUNK_FRAMES) {
+                            for (ch in 0 until CHANNELS) {
+                                var m_val = (drums[ch][f] + bass[ch][f] + other[ch][f]) * stdF + meanF
+                                var v_val = vocals[ch][f] * stdF + meanF
+
+                                val rightWeight = (CHUNK_FRAMES - f).toFloat() / overlapSize
+                                m_val *= rightWeight
+                                v_val *= rightWeight
+
+                                val overIdx = f - framesToWrite
+                                outMusicOverlap[overIdx * CHANNELS + ch] = m_val
+                                outVocalsOverlap[overIdx * CHANNELS + ch] = v_val
+                            }
+                        }
+                    }
 
                     inputTensor.close()
                     result.close()
 
-                    processedFrames += framesRead
-                    val progress = 0.1f + 0.8f * (processedFrames.toFloat() / totalFrames.toFloat())
-                    emit(SeparationState.Progress(progress))
+                    processedFrames += actualFramesRead
+                    val progress = 0.12f + 0.78f * (processedFrames.toFloat() / totalFrames.toFloat())
+                    emit(SeparationState.Progress(progress.coerceAtMost(0.88f)))
+                    
+                    isFirstChunk = false
                 }
 
                 inputStream.close()
@@ -208,12 +281,12 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
 
             emit(SeparationState.Progress(0.9f)) // Encoding 
 
-            // 4. Encode raw PCM back to mp3
+            // 4. Encode raw PCM back to mp3 (High Quality 320kbps)
             val outVocals = File(context.filesDir, "vocals_${System.currentTimeMillis()}.mp3")
             val outMusic = File(context.filesDir, "music_${System.currentTimeMillis()}.mp3")
 
-            val encVocalCmd = "-y -f f32le -ac $CHANNELS -ar $SAMPLE_RATE -i \"${tempRawVocals.absolutePath}\" -c:a libmp3lame -q:a 2 \"${outVocals.absolutePath}\""
-            val encMusicCmd = "-y -f f32le -ac $CHANNELS -ar $SAMPLE_RATE -i \"${tempRawMusic.absolutePath}\" -c:a libmp3lame -q:a 2 \"${outMusic.absolutePath}\""
+            val encVocalCmd = "-y -f f32le -ac $CHANNELS -ar $SAMPLE_RATE -i \"${tempRawVocals.absolutePath}\" -c:a libmp3lame -b:a 320k \"${outVocals.absolutePath}\""
+            val encMusicCmd = "-y -f f32le -ac $CHANNELS -ar $SAMPLE_RATE -i \"${tempRawMusic.absolutePath}\" -c:a libmp3lame -b:a 320k \"${outMusic.absolutePath}\""
 
             val res1 = FFmpegKit.execute(encVocalCmd)
             val res2 = FFmpegKit.execute(encMusicCmd)
