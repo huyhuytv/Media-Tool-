@@ -13,6 +13,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.*
@@ -81,10 +82,34 @@ fun MixScreen(navController: NavController) {
     var hasOutput by remember { mutableStateOf(false) }
     var outputPath by remember { mutableStateOf("") }
     
+    var showLiveConsole by remember { mutableStateOf(false) }
+    
     // Players for Preview
     var basePlayer by remember { mutableStateOf<ExoPlayer?>(null) }
     var isBasePlaying by remember { mutableStateOf(false) }
     
+    if (showLiveConsole) {
+        LiveConsoleDialog(
+            context = context,
+            baseUri = baseUri,
+            bgAudios = bgAudios,
+            muteBaseVideo = muteBaseVideo,
+            baseVolume = baseVolume,
+            onDismissRequest = { showLiveConsole = false },
+            onApply = { bStart, bEnd, bgPairs ->
+                baseStarts = bStart
+                baseEnds = bEnd
+                bgPairs.forEachIndexed { i, pair ->
+                    if (i < bgAudios.size) {
+                        bgAudios[i] = bgAudios[i].copy(starts = pair.first, ends = pair.second)
+                    }
+                }
+                showLiveConsole = false
+                Toast.makeText(context, "Đã áp dụng mốc thời gian", Toast.LENGTH_SHORT).show()
+            }
+        )
+    }
+
     // Clean up players on dispose
     DisposableEffect(Unit) {
         onDispose {
@@ -358,6 +383,14 @@ fun MixScreen(navController: NavController) {
                 )
             }
 
+            OutlinedButton(
+                onClick = { showLiveConsole = true },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary)
+            ) {
+                Text(text = "MỞ BÀN ĐIỀU KHIỂN LIVE", fontWeight = FontWeight.Bold)
+            }
+
             // [1] BASE FILE
             Text(if (isMixModeVideo) "[1] VIDEO GỐC" else "[1] FILE ÂM THANH GỐC", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
             
@@ -538,4 +571,215 @@ fun MixScreen(navController: NavController) {
         }
     }
 }
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun LiveConsoleDialog(
+    context: Context,
+    baseUri: Uri?,
+    bgAudios: List<BgAudioItem>,
+    muteBaseVideo: Boolean,
+    baseVolume: Float,
+    onDismissRequest: () -> Unit,
+    onApply: (baseStarts: String, baseEnds: String, bgMarkers: List<Pair<String, String>>) -> Unit
+) {
+    var isRecording by remember { mutableStateOf(false) }
+    var basePlaying by remember { mutableStateOf(false) }
+    val bgPlaying = remember { mutableStateListOf<Boolean>().apply { 
+        repeat(bgAudios.size) { add(false) } 
+    } }
+    
+    var startTime by remember { mutableStateOf(0L) }
+    var currentTime by remember { mutableStateOf(0L) }
+    
+    val baseStartsList = remember { mutableStateListOf<Long>() }
+    val baseEndsList = remember { mutableStateListOf<Long>() }
+    val bgStartsList = remember { mutableStateListOf<MutableList<Long>>().apply {
+        repeat(bgAudios.size) { add(mutableListOf()) }
+    } }
+    val bgEndsList = remember { mutableStateListOf<MutableList<Long>>().apply {
+        repeat(bgAudios.size) { add(mutableListOf()) }
+    } }
+    
+    val basePlayerRef = remember { mutableStateOf<ExoPlayer?>(null) }
+    val bgPlayersRef = remember { mutableStateListOf<ExoPlayer>() }
+    
+    LaunchedEffect(isRecording) {
+        while(isRecording) {
+            currentTime = System.currentTimeMillis() - startTime
+            delay(50)
+        }
+    }
+    
+    DisposableEffect(Unit) {
+        onDispose {
+            basePlayerRef.value?.release()
+            bgPlayersRef.forEach { it.release() }
+        }
+    }
+
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onDismissRequest,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp)
+                    .verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text("BÀN ĐIỀU KHIỂN LIVE", fontSize = 18.sp, color = Color(0xFFFF8800), fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 16.dp))
+                
+                val minutes = (currentTime / 1000) / 60
+                val seconds = (currentTime / 1000) % 60
+                val millis = currentTime % 1000
+                Text(
+                    text = String.format("%02d:%02d.%03d", minutes, seconds, millis),
+                    fontSize = 32.sp,
+                    modifier = Modifier.padding(bottom = 16.dp)
+                )
+
+                Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Column(modifier = Modifier.weight(1f, fill=false).widthIn(min = 120.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(if (basePlaying) "GỐC: ĐANG PHÁT" else "GỐC: DỪNG", fontSize = 12.sp)
+                        Button(
+                            onClick = {
+                                if (isRecording) {
+                                    if (basePlaying) {
+                                        basePlayerRef.value?.pause()
+                                        baseEndsList.add(currentTime)
+                                        basePlaying = false
+                                    } else {
+                                        basePlayerRef.value?.play()
+                                        baseStartsList.add(currentTime)
+                                        basePlaying = true
+                                    }
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+                        ) {
+                            Text(if (basePlaying) "TẠM DỪNG GỐC" else "PHÁT GỐC", textAlign = TextAlign.Center)
+                        }
+                    }
+                    
+                    bgAudios.forEachIndexed { i, _ ->
+                        Column(modifier = Modifier.weight(1f, fill=false).widthIn(min = 120.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(if (bgPlaying[i]) "NỀN ${i+1}: ĐANG PHÁT" else "NỀN ${i+1}: DỪNG", fontSize = 12.sp)
+                            Button(
+                                onClick = {
+                                    if (isRecording) {
+                                        if (bgPlaying[i]) {
+                                            bgPlayersRef[i].pause()
+                                            bgEndsList[i].add(currentTime)
+                                            bgPlaying[i] = false
+                                        } else {
+                                            bgPlayersRef[i].play()
+                                            bgStartsList[i].add(currentTime)
+                                            bgPlaying[i] = true
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+                            ) {
+                                Text(if (bgPlaying[i]) "TẠM DỪNG NỀN ${i+1}" else "PHÁT NỀN ${i+1}", textAlign = TextAlign.Center)
+                            }
+                        }
+                    }
+                }
+                
+                Spacer(modifier = Modifier.height(32.dp))
+                
+                Button(
+                    onClick = {
+                        if (!isRecording) {
+                            if (baseUri == null) {
+                                Toast.makeText(context, "Chưa chọn file gốc", Toast.LENGTH_SHORT).show()
+                                return@Button
+                            }
+                            
+                            basePlayerRef.value?.release()
+                            bgPlayersRef.forEach { it.release() }
+                            bgPlayersRef.clear()
+                            
+                            val bPlayer = ExoPlayer.Builder(context).build().apply {
+                                setMediaItem(MediaItem.fromUri(baseUri))
+                                volume = if (muteBaseVideo) 0f else baseVolume
+                                prepare()
+                                playWhenReady = false
+                            }
+                            basePlayerRef.value = bPlayer
+                            
+                            bgAudios.forEach { aud ->
+                                val bgP = ExoPlayer.Builder(context).build().apply {
+                                    setMediaItem(MediaItem.fromUri(aud.uri))
+                                    volume = aud.volume
+                                    prepare()
+                                    playWhenReady = false
+                                }
+                                bgPlayersRef.add(bgP)
+                            }
+                            
+                            baseStartsList.clear()
+                            baseEndsList.clear()
+                            bgStartsList.clear()
+                            bgEndsList.clear()
+                            repeat(bgAudios.size) { 
+                                bgStartsList.add(mutableListOf())
+                                bgEndsList.add(mutableListOf())
+                            }
+                            
+                            basePlaying = false
+                            for (i in bgPlaying.indices) bgPlaying[i] = false
+                            
+                            startTime = System.currentTimeMillis()
+                            isRecording = true
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("BẮT ĐẦU GHI (REC)")
+                }
+                
+                Button(
+                    onClick = {
+                        if (isRecording) {
+                            if (basePlaying) {
+                                baseEndsList.add(currentTime)
+                            }
+                            bgPlaying.forEachIndexed { i, playing ->
+                                if (playing) bgEndsList[i].add(currentTime)
+                            }
+                            isRecording = false
+                            basePlayerRef.value?.release()
+                            basePlayerRef.value = null
+                            bgPlayersRef.forEach { it.release() }
+                            bgPlayersRef.clear()
+                            
+                            val bStart = baseStartsList.joinToString(", ")
+                            val bEnd = baseEndsList.joinToString(", ")
+                            val bgPairs = bgAudios.indices.map { i ->
+                                Pair(bgStartsList[i].joinToString(", "), bgEndsList[i].joinToString(", "))
+                            }
+                            onApply(bStart, bEnd, bgPairs)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+                ) {
+                    Text("KẾT THÚC & ÁP DỤNG")
+                }
+                
+                OutlinedButton(
+                    onClick = onDismissRequest,
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+                ) {
+                    Text("HỦY & ĐÓNG")
+                }
+            }
+        }
+    }
+}
+
 

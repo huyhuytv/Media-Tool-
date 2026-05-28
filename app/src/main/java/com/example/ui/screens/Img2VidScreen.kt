@@ -109,13 +109,25 @@ fun Img2VidScreen(navController: NavController) {
         
         coroutineScope.launch(Dispatchers.IO) {
             try {
-                val audioSaf = mediaEngine.getSafParameter(audioUri!!)
-                if (audioSaf == null) {
-                    withContext(Dispatchers.Main) {
-                        Toast.makeText(context, "Lỗi đọc file âm thanh", Toast.LENGTH_SHORT).show()
-                        isProcessing = false
+                val tempAudioFile = File(context.cacheDir, "temp_img2vid_audio_${System.currentTimeMillis()}")
+                var audioPath = ""
+                try {
+                    context.contentResolver.openInputStream(audioUri!!)?.use { input ->
+                        tempAudioFile.outputStream().use { output ->
+                            input.copyTo(output)
+                        }
                     }
-                    return@launch
+                    audioPath = tempAudioFile.absolutePath
+                } catch (e: Exception) {
+                    val audioSafOption = mediaEngine.getSafParameter(audioUri!!)
+                    if (audioSafOption == null) {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "Lỗi đọc file âm thanh", Toast.LENGTH_SHORT).show()
+                            isProcessing = false
+                        }
+                        return@launch
+                    }
+                    audioPath = audioSafOption
                 }
                 
                 val outputDir = File(context.cacheDir, "img2vid").apply { mkdirs() }
@@ -156,27 +168,26 @@ fun Img2VidScreen(navController: NavController) {
                 
                 val vPreset = com.example.core.SettingsManager.getVideoPresetArg(context)
                 val vBitrate = com.example.core.SettingsManager.getVideoBitrateArg(context)
-                val rawCodec = com.example.core.SettingsManager.getAudioCodecArg(context)
-                val usesIncompatibleCodec = rawCodec.contains("flac") || rawCodec.contains("pcm")
-                val isLossless = com.example.core.SettingsManager.isAudioLossless(context)
-                
-                val aCodec = if (isLossless || usesIncompatibleCodec) "-c:a aac" else rawCodec
-                val aBitrate = if (isLossless || usesIncompatibleCodec) "-b:a ${com.example.core.SettingsManager.getAudioBitrateInt(context)/1000}k" else com.example.core.SettingsManager.getAudioBitrateArg(context)
+                val aCodec = "-c:a aac"
+                val aBitrate = "-b:a 320k"
     
                 val command = if (copiedImages.size == 1) {
                     val imgPath = copiedImages.first().absolutePath
-                    "-y -loop 1 -framerate 1 -i \"$imgPath\" -i \"$audioSaf\" -vf \"$scaleFilter\" -c:v libx264 $vPreset $vBitrate -tune stillimage $aCodec $aBitrate -pix_fmt yuv420p -shortest \"${outputFile.absolutePath}\""
+                    "-y -loop 1 -framerate 1 -i \"$imgPath\" -i \"$audioPath\" -vf \"$scaleFilter\" -c:v libx264 $vPreset $vBitrate -tune stillimage $aCodec $aBitrate -pix_fmt yuv420p -shortest \"${outputFile.absolutePath}\""
                 } else {
                     val concatFile = File(context.cacheDir, "img_concat.txt")
                     val writer = FileWriter(concatFile)
-                    copiedImages.forEach { file ->
-                        writer.write("file '${file.absolutePath.replace("'", "'\\''")}'\n")
-                        writer.write("duration 3\n")
+                    // Lặp lại nhiều lần để đảm bảo đủ dài cho video
+                    for (i in 0 until 100) {
+                        copiedImages.forEach { file ->
+                            writer.write("file '${file.absolutePath.replace("'", "'\\''")}'\n")
+                            writer.write("duration 3\n")
+                        }
                     }
                     writer.write("file '${copiedImages.last().absolutePath.replace("'", "'\\''")}'\n")
                     writer.close()
                     
-                    "-y -stream_loop -1 -f concat -safe 0 -i \"${concatFile.absolutePath}\" -i \"$audioSaf\" -vf \"$scaleFilter\" -c:v libx264 $vPreset $vBitrate -tune stillimage $aCodec $aBitrate -pix_fmt yuv420p -shortest \"${outputFile.absolutePath}\""
+                    "-y -f concat -safe 0 -i \"${concatFile.absolutePath}\" -i \"$audioPath\" -vf \"$scaleFilter\" -c:v libx264 $vPreset $vBitrate -tune stillimage $aCodec $aBitrate -pix_fmt yuv420p -shortest \"${outputFile.absolutePath}\""
                 }
                 
                 mediaEngine.executeFFmpegCommand(command).collect { state ->
@@ -191,7 +202,8 @@ fun Img2VidScreen(navController: NavController) {
                                 Toast.makeText(context, "Tạo video thành công!", Toast.LENGTH_SHORT).show()
                             }
                             is MediaEngine.ExecutionState.Error -> {
-                                progressMsg = "Lỗi tạo video!"
+                                val logTail = state.logs?.takeLast(100) ?: state.failStackTrace?.takeLast(100) ?: "Lỗi không rõ"
+                                progressMsg = "Lỗi Code: ${state.returnCode}\n$logTail"
                                 isProcessing = false
                                 Toast.makeText(context, "Lỗi: ${state.returnCode}", Toast.LENGTH_LONG).show()
                             }

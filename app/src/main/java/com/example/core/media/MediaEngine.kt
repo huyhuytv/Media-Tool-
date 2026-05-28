@@ -24,7 +24,7 @@ class MediaEngine(private val context: Context) {
         object Connecting : ExecutionState()
         data class Progress(val timeInMilliseconds: Long, val size: Long, val bitrate: Double) : ExecutionState()
         data class Success(val outputLog: String) : ExecutionState()
-        data class Error(val returnCode: ReturnCode?, val failStackTrace: String?) : ExecutionState()
+        data class Error(val returnCode: ReturnCode?, val failStackTrace: String?, val logs: String?) : ExecutionState()
     }
 
     /**
@@ -43,9 +43,9 @@ class MediaEngine(private val context: Context) {
                     if (ReturnCode.isSuccess(returnCode)) {
                         trySend(ExecutionState.Success(session.logsAsString ?: ""))
                     } else if (ReturnCode.isCancel(returnCode)) {
-                        trySend(ExecutionState.Error(returnCode, "Canceled by user"))
+                        trySend(ExecutionState.Error(returnCode, "Canceled by user", session.logsAsString))
                     } else {
-                        trySend(ExecutionState.Error(returnCode, session.failStackTrace ?: session.logsAsString))
+                        trySend(ExecutionState.Error(returnCode, session.failStackTrace ?: "Command failed", session.logsAsString))
                     }
                     close()
                 },
@@ -65,7 +65,7 @@ class MediaEngine(private val context: Context) {
             }
         } catch (e: Throwable) {
             val causeStr = generateSequence(e) { it.cause }.joinToString(" -> ") { it.toString() }
-            trySend(ExecutionState.Error(null, "Native Error: $causeStr"))
+            trySend(ExecutionState.Error(null, "Native Error: $causeStr", null))
             close(e)
         }
     }

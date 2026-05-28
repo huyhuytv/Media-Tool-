@@ -7,11 +7,12 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -19,34 +20,65 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import com.example.core.media.MediaEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SubScreen(navController: NavController) {
+fun SubScreen(navController: NavController, viewModel: SubViewModel = viewModel()) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val mediaEngine = remember { MediaEngine(context) }
     
-    var selectedUri by remember { mutableStateOf<Uri?>(null) }
-    var fileName by remember { mutableStateOf("Chưa chọn") }
+    val state by viewModel.state.collectAsState()
     
-    var isProcessing by remember { mutableStateOf(false) }
-    var progressMsg by remember { mutableStateOf("") }
-    var hasOutput by remember { mutableStateOf(false) }
-    var outputPath by remember { mutableStateOf("") }
+    // Khởi tạo Player & TTS
+    LaunchedEffect(Unit) {
+        viewModel.initPlayer(context)
+    }
+
+    // Laucher chọn Video
+    val vidLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        uri?.let {
+            val fileName = getFileName(context, it) ?: "video_file"
+            viewModel.setVideo(it, fileName)
+            Toast.makeText(context, "Đã nạp file Video", Toast.LENGTH_SHORT).show()
+        }
+    }
     
+    // Laucher chọn Phụ đề
+    val subLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        uri?.let {
+            val fileName = getFileName(context, it) ?: "sub_file"
+            coroutineScope.launch(Dispatchers.IO) {
+                try {
+                    val content = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: ""
+                    withContext(Dispatchers.Main) {
+                        viewModel.setSubtitle(uri, fileName, content)
+                        Toast.makeText(context, "Đã nạp phụ đề", Toast.LENGTH_SHORT).show()
+                    }
+                } catch (e: Exception) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(context, "Lỗi đọc file phụ đề", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }
+    }
+
+    // Launcher lưu tệp sau khi trích xuất
     val saveLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/x-subrip")) { destUri ->
         destUri?.let { uri ->
-            if (outputPath.isNotEmpty()) {
+            if (state.extractOutputPath.isNotEmpty()) {
                 coroutineScope.launch(Dispatchers.IO) {
                     try {
-                        val inFile = File(outputPath)
+                        val inFile = File(state.extractOutputPath)
                         context.contentResolver.openOutputStream(uri)?.use { outStream ->
                             inFile.inputStream().use { inStream ->
                                 inStream.copyTo(outStream)
@@ -64,86 +96,71 @@ fun SubScreen(navController: NavController) {
             }
         }
     }
-
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
-        uri?.let {
-            selectedUri = it
-            fileName = getFileName(context, it) ?: "video_file"
-        }
-    }
     
     fun startExtractSubtitles() {
-        try {
-            if (selectedUri == null) {
-                Toast.makeText(context, "Vui lòng chọn video!", Toast.LENGTH_SHORT).show()
-                return
-            }
-            
-            isProcessing = true
-            progressMsg = "Đang kiểm tra và trích xuất..."
-            hasOutput = false
-            
-            coroutineScope.launch {
-                try {
-                    val safPath = mediaEngine.getSafParameter(selectedUri!!)
-                    if (safPath == null) {
-                        withContext(Dispatchers.Main) {
-                            Toast.makeText(context, "Lỗi đọc file!", Toast.LENGTH_SHORT).show()
-                            isProcessing = false
-                        }
-                        return@launch
+        if (state.videoUri == null) {
+            Toast.makeText(context, "Vui lòng chọn video trước!", Toast.LENGTH_SHORT).show()
+            return
+        }
+        viewModel.startExtraction()
+        coroutineScope.launch(Dispatchers.IO) {
+            try {
+                val safPath = mediaEngine.getSafParameter(state.videoUri!!)
+                if (safPath == null) {
+                    withContext(Dispatchers.Main) {
+                        viewModel.finishExtraction(false, "", "Lỗi: Không thể đọc đường dẫn Video")
+                        Toast.makeText(context, "Lỗi đọc file Video", Toast.LENGTH_SHORT).show()
                     }
-                    
-                    val outputDir = File(context.cacheDir, "subs_output").apply { mkdirs() }
-                    val outputFile = File(outputDir, "subtitles_${System.currentTimeMillis()}.srt")
-                    
-                    // Lệnh lấy stream phụ đề đầu tiên (0:s:0)
-                    val command = "-y -i \"$safPath\" -map 0:s:0 -c:s srt \"${outputFile.absolutePath}\""
-                    
-                    mediaEngine.executeFFmpegCommand(command).collect { state ->
-                        withContext(Dispatchers.Main) {
-                            when (state) {
-                                is MediaEngine.ExecutionState.Connecting -> progressMsg = "Đang bắt đầu..."
-                                is MediaEngine.ExecutionState.Progress -> progressMsg = "Đang xử lý..."
-                                is MediaEngine.ExecutionState.Success -> {
-                                    isProcessing = false
-                                    if (outputFile.exists() && outputFile.length() > 0) {
-                                        progressMsg = "Trích xuất thành công!"
-                                        hasOutput = true
-                                        outputPath = outputFile.absolutePath
-                                        Toast.makeText(context, "Đã trích xuất phụ đề!", Toast.LENGTH_SHORT).show()
-                                    } else {
-                                        progressMsg = "Lỗi: Không tìm thấy phụ đề trong video."
-                                        outputFile.delete()
-                                        Toast.makeText(context, "Video không chứa phụ đề!", Toast.LENGTH_LONG).show()
-                                    }
+                    return@launch
+                }
+                
+                val outputDir = File(context.cacheDir, "subs_output").apply { mkdirs() }
+                val outputFile = File(outputDir, "subtitles_${System.currentTimeMillis()}.srt")
+                
+                // Lệnh lấy stream phụ đề đầu tiên (0:s:0)
+                val command = "-y -i \"$safPath\" -map 0:s:0 -c:s srt \"${outputFile.absolutePath}\""
+                
+                mediaEngine.executeFFmpegCommand(command).collect { execState ->
+                    withContext(Dispatchers.Main) {
+                        when (execState) {
+                            is MediaEngine.ExecutionState.Connecting -> viewModel.updateExtractionProgress("Đang bắt đầu...")
+                            is MediaEngine.ExecutionState.Progress -> viewModel.updateExtractionProgress("Đang xử lý...")
+                            is MediaEngine.ExecutionState.Success -> {
+                                if (outputFile.exists() && outputFile.length() > 0) {
+                                    viewModel.finishExtraction(true, outputFile.absolutePath, "Trích xuất thành công!")
+                                    
+                                    // Tự động nạp file SRT vừa trích xuất
+                                    val content = outputFile.readText()
+                                    viewModel.setSubtitle(Uri.fromFile(outputFile), outputFile.name, content)
+                                    Toast.makeText(context, "Đã trích xuất và nạp tự động phụ đề!", Toast.LENGTH_LONG).show()
+                                } else {
+                                    outputFile.delete()
+                                    viewModel.finishExtraction(false, "", "Lỗi: Không tìm thấy phụ đề đính kèm trong Video.")
                                 }
-                                is MediaEngine.ExecutionState.Error -> {
-                                    isProcessing = false
-                                    progressMsg = "Lập tức hoàn tất (Video không có phụ đề hoặc không hỗ trợ)."
-                                    Toast.makeText(context, "Video này không có luồng phụ đề (Subtitle Stream) đính kèm!", Toast.LENGTH_LONG).show()
-                                }
+                            }
+                            is MediaEngine.ExecutionState.Error -> {
+                                viewModel.finishExtraction(false, "", "Video không có luồng phụ đề đính kèm.")
                             }
                         }
                     }
-                } catch(e: Throwable) {
-                    withContext(Dispatchers.Main) {
-                        progressMsg = "Ngoại lệ: ${e.message}"
-                        isProcessing = false
-                        Toast.makeText(context, "Lỗi: ${e.message}", Toast.LENGTH_LONG).show()
-                    }
+                }
+            } catch(e: Exception) {
+                withContext(Dispatchers.Main) {
+                    viewModel.finishExtraction(false, "", "Lỗi cục bộ: ${e.message}")
                 }
             }
-        } catch(e: Throwable) {
-            Toast.makeText(context, "Lỗi: ${e.message}", Toast.LENGTH_LONG).show()
-            isProcessing = false
         }
     }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Trích xuất Phụ đề", fontSize = 18.sp, fontWeight = FontWeight.Bold) },
+                title = { Text("Đọc & Trích xuất Phụ đề", fontWeight = FontWeight.Bold) },
+                navigationIcon = {
+                    IconButton(onClick = { navController.popBackStack() }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Quay lại")
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
             )
         }
@@ -156,67 +173,132 @@ fun SubScreen(navController: NavController) {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Text(
-                text = "Tính năng này sẽ dò tìm trong Video xem có kênh Phụ đề (Subtitle Stream) nào được đính kèm gốc hay không. Nếu có, nó sẽ trích xuất ra file .SRT riêng biệt.", 
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 14.sp
-            )
-
-            Button(onClick = { launcher.launch("video/*") }, modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Chọn video từ thiết bị để trích xuất phụ đề" }) {
+            // [1] CHỌN VIDEO
+            Text("[1] CHỌN VIDEO", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Button(onClick = { vidLauncher.launch("video/*") }, modifier = Modifier.fillMaxWidth()) {
                 Text("Chọn Video")
             }
+            Text("Video: ${state.videoFileName}", color = MaterialTheme.colorScheme.onSurfaceVariant)
 
-            Text("Video đã chọn: $fileName", fontWeight = FontWeight.SemiBold, modifier = Modifier.semantics { contentDescription = "Video đang được chọn: $fileName" })
+            HorizontalDivider()
 
-            if (isProcessing || progressMsg.isNotEmpty()) {
+            // [2] CHỌN PHỤ ĐỀ ĐỂ ĐỌC
+            Text("[2] CHỌN PHỤ ĐỀ ĐỂ ĐỌC", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Button(onClick = { subLauncher.launch("*/*") }, modifier = Modifier.fillMaxWidth()) {
+                Text("Chọn File Phụ đề (.srt / .vtt)")
+            }
+            Text("Phụ đề: ${state.subFileName} (${state.subCount} câu)", color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+            HorizontalDivider()
+
+            // ĐIỀU KHIỂN TRÌNH PHÁT
+            Text("--- ĐIỀU KHIỂN TRÌNH PHÁT ---", color = MaterialTheme.colorScheme.tertiary, fontWeight = FontWeight.Bold)
+            val isPlayEnabled = state.videoUri != null
+            Button(
+                onClick = { viewModel.togglePlayPause() },
+                enabled = isPlayEnabled,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
+            ) {
+                Text(if (state.isPlaying) "Tạm dừng Video" else "Phát Video (Chỉ âm thanh)")
+            }
+            
+            Text(
+                "Thời gian: ${formatTime(state.currentTimeMs)} / ${formatTime(state.durationMs)}",
+                modifier = Modifier.semantics { contentDescription = "Thời gian video hiện tại" }
+            )
+            Slider(
+                value = if (state.durationMs > 0) state.currentTimeMs.toFloat() else 0f,
+                onValueChange = { viewModel.seekTo(it.toLong()) },
+                valueRange = 0f..(if (state.durationMs > 0) state.durationMs.toFloat() else 100f),
+                modifier = Modifier.fillMaxWidth()
+            )
+            
+            Text("Âm lượng Video: ${(state.videoVolume * 100).roundToInt()}%")
+            Slider(
+                value = (state.videoVolume * 100f),
+                onValueChange = { viewModel.setVideoVolume(it / 100f) },
+                valueRange = 0f..100f,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            HorizontalDivider()
+
+            // CÀI ĐẶT TTS
+            Text("--- CÀI ĐẶT GIỌNG ĐỌC (TTS) ---", color = MaterialTheme.colorScheme.secondary, fontWeight = FontWeight.Bold)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("Auto-Duck (Tự động nhỏ tiếng Video)", modifier = Modifier.weight(1f))
+                Switch(
+                    checked = state.autoDuck,
+                    onCheckedChange = { viewModel.setAutoDuck(it) },
+                    modifier = Modifier.semantics { contentDescription = "Chuyển đổi giảm âm video thông minh khi đọc giọng nói" }
+                )
+            }
+            
+            Text("Tốc độ đọc: ${String.format("%.1f", state.ttsSpeed)}x")
+            Slider(
+                value = state.ttsSpeed,
+                onValueChange = { viewModel.setTtsSpeed(it) },
+                valueRange = 0.5f..2.0f,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            HorizontalDivider()
+
+            // TRÍCH XUẤT PHỤ ĐỀ CÓ SẴN
+            Text("--- TRÍCH XUẤT PHỤ ĐỀ CÓ SẴN ---", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+            Button(
+                onClick = { startExtractSubtitles() },
+                enabled = !state.isExtracting && state.videoUri != null,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+            ) {
+                Text("TRÍCH XUẤT PHỤ ĐỀ TỪ VIDEO")
+            }
+            
+            if (state.extractProgress.isNotEmpty()) {
                 Text(
-                    text = progressMsg, 
+                    text = state.extractProgress, 
                     modifier = Modifier.fillMaxWidth(), 
                     textAlign = TextAlign.Center, 
                     fontWeight = FontWeight.Bold, 
-                    color = if (progressMsg.contains("Lỗi") || progressMsg.contains("không có")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                    color = if (state.extractProgress.contains("Lỗi") || state.extractProgress.contains("không có")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                 )
-                if (isProcessing) {
+                if (state.isExtracting) {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }
             }
-
-            Button(
-                onClick = { startExtractSubtitles() },
-                enabled = !isProcessing && selectedUri != null,
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.errorContainer, 
-                    contentColor = MaterialTheme.colorScheme.onErrorContainer
-                )
-            ) {
-                Text("TRÍCH XUẤT", fontWeight = FontWeight.Bold)
-            }
-
-            if (hasOutput) {
-                Card(
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text("Phụ đề được lưu tại (định dạng SRT):", fontWeight = FontWeight.Bold)
-                        Text(outputPath, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 8.dp))
-                        
-                        Button(onClick = { 
-                            saveLauncher.launch("subtitles_${System.currentTimeMillis()}.srt")
-                        }, modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Lưu file phụ đề định dạng SRT đã giải xuất vào thư mục của thiết bị" }) {
-                            Text("Lưu phụ đề vào thiết bị")
-                        }
-                    }
+            
+            if (state.extractOutputPath.isNotEmpty()) {
+                Button(onClick = { 
+                    saveLauncher.launch("subtitles_${System.currentTimeMillis()}.srt")
+                }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Lưu file phụ đề vừa trích xuất")
                 }
             }
 
-            Spacer(modifier = Modifier.weight(1f))
+            Spacer(modifier = Modifier.height(8.dp))
 
-            TextButton(onClick = { navController.popBackStack() }, modifier = Modifier.fillMaxWidth()) {
-                Text("Quay lại")
+            OutlinedButton(
+                onClick = { viewModel.clearAll() },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Xóa & Đặt lại")
             }
         }
     }
 }
+
+fun formatTime(ms: Long): String {
+    if (ms <= 0) return "00:00"
+    val totalSeconds = ms / 1000
+    val m = totalSeconds / 60
+    val s = totalSeconds % 60
+    return String.format("%02d:%02d", m, s)
+}
+
 

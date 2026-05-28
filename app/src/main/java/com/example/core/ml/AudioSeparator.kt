@@ -88,6 +88,10 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
                 // Buffer for reading interleaved floats
                 val inputBufferBytes = ByteArray(CHUNK_FRAMES * BYTES_PER_FRAME)
                 val tensorBuffer = FloatBuffer.allocate(CHANNELS * CHUNK_FRAMES)
+                
+                // Pre-allocate buffers for merged output to prevent OutOfMemory/GC thrashing in loop
+                val vocalsMerged = ByteBuffer.allocate(CHUNK_FRAMES * BYTES_PER_FRAME).order(ByteOrder.LITTLE_ENDIAN)
+                val musicMerged = ByteBuffer.allocate(CHUNK_FRAMES * BYTES_PER_FRAME).order(ByteOrder.LITTLE_ENDIAN)
 
                 while (coroutineContext.isActive) {
                     // Read a chunk
@@ -105,14 +109,36 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
                         .order(ByteOrder.LITTLE_ENDIAN)
                         .asFloatBuffer()
 
-                    // De-interleave and pad: L, R, L, R -> LLLL..., RRRR... with fixed chunk size
+                    // Calculate mean and std for the valid portion to normalize
+                    var monoSum = 0.0
+                    for (f in 0 until framesRead) {
+                        monoSum += (floatBuffer.get(f * CHANNELS + 0) + floatBuffer.get(f * CHANNELS + 1)) / 2.0
+                    }
+                    val meanMono = monoSum / framesRead
+
+                    var varianceSum = 0.0
+                    for (f in 0 until framesRead) {
+                        val mono = (floatBuffer.get(f * CHANNELS + 0) + floatBuffer.get(f * CHANNELS + 1)) / 2.0
+                        val diff = mono - meanMono
+                        varianceSum += diff * diff
+                    }
+                    val stdMono = if (framesRead > 1) {
+                        Math.sqrt(varianceSum / (framesRead - 1)).toFloat()
+                    } else {
+                        1f
+                    }
+                    val meanF = meanMono.toFloat()
+
+                    // De-interleave and normalize: L, R, L, R -> LLLL..., RRRR... with fixed chunk size
                     tensorBuffer.clear()
                     for (i in 0 until CHANNELS * CHUNK_FRAMES) {
-                        tensorBuffer.put(i, 0f)
+                        tensorBuffer.put(i, 0f) // Fill padded region with 0
                     }
                     for (ch in 0 until CHANNELS) {
                         for (f in 0 until framesRead) {
-                            tensorBuffer.put(ch * CHUNK_FRAMES + f, floatBuffer.get(f * CHANNELS + ch))
+                            val originalVal = floatBuffer.get(f * CHANNELS + ch)
+                            val normalizedVal = (originalVal - meanF) / (stdMono + 1e-5f)
+                            tensorBuffer.put(ch * CHUNK_FRAMES + f, normalizedVal)
                         }
                     }
 
@@ -136,17 +162,25 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
                     val other = batchOut[2] as Array<FloatArray>
                     val vocals = batchOut[3] as Array<FloatArray>
 
-                    // Interleave and write back
-                    val vocalsMerged = ByteBuffer.allocate(framesRead * BYTES_PER_FRAME).order(ByteOrder.LITTLE_ENDIAN)
-                    val musicMerged = ByteBuffer.allocate(framesRead * BYTES_PER_FRAME).order(ByteOrder.LITTLE_ENDIAN)
+                    vocalsMerged.clear()
+                    musicMerged.clear()
 
                     for (f in 0 until framesRead) {
                         for (ch in 0 until CHANNELS) {
-                            val v = vocals[ch][f]
-                            val m = drums[ch][f] + bass[ch][f] + other[ch][f]
+                            // Un-normalize the output from the model using the chunk's std and mean
+                            val d = drums[ch][f] * stdMono + meanF
+                            val b = bass[ch][f] * stdMono + meanF
+                            val o = other[ch][f] * stdMono + meanF
+                            val v = vocals[ch][f] * stdMono + meanF
+
+                            val m = d + b + o
                             
-                            vocalsMerged.putFloat(v)
-                            musicMerged.putFloat(m)
+                            // Clip the outputs to [-1.0, 1.0] to prevent any chance of MP3 encoding distortion (méo tiếng)
+                            val vClipped = v.coerceIn(-1.0f, 1.0f)
+                            val mClipped = m.coerceIn(-1.0f, 1.0f)
+                            
+                            vocalsMerged.putFloat(vClipped)
+                            musicMerged.putFloat(mClipped)
                         }
                     }
 
